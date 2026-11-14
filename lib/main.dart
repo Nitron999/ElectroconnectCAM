@@ -1070,7 +1070,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                             children: [
                                               Text(chk.title, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: col)),
                                               const SizedBox(height: 2),
-                                              Text(chk.detail, style: TextStyle(fontSize: 11.5, color: _subtleText)),
+                                              Text(chk.detail, style: TextStyle(fontSize: 12.5, color: _subtleText)),
                                             ],
                                           ),
                                         ),
@@ -1098,7 +1098,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                             const Icon(Icons.insert_drive_file_outlined, size: 15, color: accent),
                                             const SizedBox(width: 6),
                                             Expanded(child: Text(l.fileName, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600))),
-                                            Text(l.role, style: TextStyle(fontSize: 11, color: _subtleTest)),
+                                            Text(l.role, style: TextStyle(fontSize: 11, color: _subtleText)),
                                           ],
                                         ),
                                       )),
