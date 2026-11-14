@@ -147,8 +147,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
 
   final TextEditingController _customerController = TextEditingController();
   final TextEditingController _orderNameController = TextEditingController();
-  final TextEditingController _widthController = TextEditingController(text: '64');
-  final TextEditingController _heightController = TextEditingController(text: '23');
+  final TextEditingController _widthController = TextEditingController(text: '0.0');
+  final TextEditingController _heightController = TextEditingController(text: '0.0');
   final TextEditingController _qtyController = TextEditingController(text: '10');
   final TextEditingController _minTrackController = TextEditingController(text: '0.15');
   final TextEditingController _minHoleController = TextEditingController(text: '0.30');
@@ -184,6 +184,33 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       ),
     );
+  }
+
+  void _clearCurrentProject() {
+    setState(() {
+      _analysis = null;
+      _customerController.clear();
+      _orderNameController.clear();
+      _widthController.text = '0.0';
+      _heightController.text = '0.0';
+      _qtyController.text = '10';
+      _minTrackController.text = '0.15';
+      _minHoleController.text = '0.30';
+      _notesController.clear();
+      _orderType = 'Новый';
+      _layersCount = 2;
+      _material = 'FR4';
+      _thickness = '1.5';
+      _foil = '18';
+      _maskSide = 'С двух сторон';
+      _maskColor = 'Зеленая';
+      _silkSide = 'С двух сторон';
+      _silkColor = 'Белая';
+      _finish = 'HAL';
+      _contour = 'фрезеровка';
+      _electroTest = true;
+    });
+    _showSnack('Проект очищен. Готово к загрузке нового архива!');
   }
 
   Future<void> _pickAndAnalyzeZip() async {
@@ -309,10 +336,22 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         _analysis = resultObj;
         _orderNameController.text = projectTitle;
         _layersCount = finalLayersCount;
-        if (detectedWidth != null) _widthController.text = detectedWidth.toStringAsFixed(1);
-        if (detectedHeight != null) _heightController.text = detectedHeight.toStringAsFixed(1);
+        
+        if (detectedWidth != null) {
+          _widthController.text = detectedWidth.toStringAsFixed(1);
+        } else {
+          _widthController.text = '0.0';
+        }
+
+        if (detectedHeight != null) {
+          _heightController.text = detectedHeight.toStringAsFixed(1);
+        } else {
+          _heightController.text = '0.0';
+        }
+
         if (minTrackMm != null) _minTrackController.text = minTrackMm.toStringAsFixed(3);
         if (minDrillMm != null) _minHoleController.text = minDrillMm.toStringAsFixed(2);
+        
         _maskSide = (hasTopMask && hasBottomMask)
             ? 'С двух сторон'
             : ((hasTopMask || hasBottomMask) ? 'С одной стороны' : 'Без маски');
@@ -540,6 +579,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         '$_material-${_thickness}мм-${_foil}мкм; '
         'маска: $maskPart; маркировка: $silkPart; $_finish; $testPart';
   }
+
   Future<void> _exportConstructorTzFile() async {
     final w = double.tryParse(_widthController.text.replaceAll(',', '.')) ?? 0;
     final h = double.tryParse(_heightController.text.replaceAll(',', '.')) ?? 0;
@@ -776,6 +816,17 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                           ],
                         ),
                       ),
+                      const SizedBox(width: 10),
+                      OutlinedButton.icon(
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 15),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                        ),
+                        icon: const Icon(Icons.refresh_rounded, size: 18),
+                        label: const Text('НОВЫЙ ПРОЕКТ'),
+                        onPressed: _clearCurrentProject,
+                      ),
+                      const SizedBox(width: 10),
                       ElevatedButton.icon(
                         style: ElevatedButton.styleFrom(
                           backgroundColor: accent,
@@ -1047,7 +1098,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                             const Icon(Icons.insert_drive_file_outlined, size: 15, color: accent),
                                             const SizedBox(width: 6),
                                             Expanded(child: Text(l.fileName, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600))),
-                                            Text(l.role, style: TextStyle(fontSize: 11, color: _subtleText)),
+                                            Text(l.role, style: TextStyle(fontSize: 11, color: _subtleTest)),
                                           ],
                                         ),
                                       )),
