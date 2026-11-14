@@ -46,7 +46,7 @@ class _ElectroconnectCamAppState extends State<ElectroconnectCamApp> {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'ЭЛЕКТРОконнект — CAM & DFM Контроль',
+      title: 'ЭЛЕКТРОконнект — CAM & DFM (Кувезенков А.А.)',
       debugShowCheckedModeBanner: false,
       themeMode: _isDark ? ThemeMode.dark : ThemeMode.light,
       theme: ThemeData(
@@ -144,7 +144,6 @@ class CamWorkspaceScreen extends StatefulWidget {
 
 class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   GerberAnalysisResult? _analysis;
-  final List<String> _recentArchives = [];
 
   final TextEditingController _customerController = TextEditingController();
   final TextEditingController _orderNameController = TextEditingController();
@@ -154,6 +153,10 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   final TextEditingController _minTrackController = TextEditingController(text: '0.15');
   final TextEditingController _minHoleController = TextEditingController(text: '0.30');
   final TextEditingController _notesController = TextEditingController();
+
+  // Поля прайс-калькулятора
+  final TextEditingController _basePriceDm2Controller = TextEditingController(text: '528.0');
+  final TextEditingController _setupFeeController = TextEditingController(text: '2400.0');
 
   String _orderType = 'Новый';
   int _layersCount = 2;
@@ -304,9 +307,6 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
 
       setState(() {
         _analysis = resultObj;
-        if (!_recentArchives.contains(archiveName)) {
-          _recentArchives.insert(0, archiveName);
-        }
         _orderNameController.text = projectTitle;
         _layersCount = finalLayersCount;
         if (detectedWidth != null) _widthController.text = detectedWidth.toStringAsFixed(1);
@@ -540,7 +540,6 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         '$_material-${_thickness}мм-${_foil}мкм; '
         'маска: $maskPart; маркировка: $silkPart; $_finish; $testPart';
   }
-
   Future<void> _exportConstructorTzFile() async {
     final w = double.tryParse(_widthController.text.replaceAll(',', '.')) ?? 0;
     final h = double.tryParse(_heightController.text.replaceAll(',', '.')) ?? 0;
@@ -548,10 +547,17 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     final singleDm2 = (w * h) / 10000.0;
     final totalDm2 = singleDm2 * math.max(qty, 1);
 
+    final baseP = double.tryParse(_basePriceDm2Controller.text.replaceAll(',', '.')) ?? 528.0;
+    final setupP = double.tryParse(_setupFeeController.text.replaceAll(',', '.')) ?? 2400.0;
+    final pureSum = (totalDm2 * baseP) + setupP;
+    final vatSum = pureSum * 0.22;
+    final totalSumWithVat = pureSum + vatSum;
+
     final dfm = _evaluateElectroconnectDfm();
     final sb = StringBuffer();
     sb.writeln('====================================================================');
     sb.writeln('ТЕХНИЧЕСКОЕ ЗАДАНИЕ НА ПОДГОТОВКУ ПРОИЗВОДСТВА (ООО «ЭЛЕКТРОконнект»)');
+    sb.writeln('Разработчик / автор софта: Кувезенков А.А.');
     sb.writeln('====================================================================');
     sb.writeln('Дата формирования: ${DateTime.now().toString().substring(0, 16)}');
     if (_customerController.text.trim().isNotEmpty) {
@@ -560,6 +566,11 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     sb.writeln('Обозначение платы: ${_orderNameController.text.trim().isEmpty ? "Без названия" : _orderNameController.text.trim()}');
     sb.writeln('Тип заказа:        $_orderType');
     sb.writeln('Тираж:             $qty шт. (площадь 1 шт: ${singleDm2.toStringAsFixed(3)} дм², партия: ${totalDm2.toStringAsFixed(2)} дм²)');
+    sb.writeln('--------------------------------------------------------------------');
+    sb.writeln('РАСЧЕТ СТОИМОСТИ (ПРЕДВАРИТЕЛЬНЫЙ):');
+    sb.writeln('• Сумма без НДС:   ${pureSum.toStringAsFixed(2)} руб.');
+    sb.writeln('• НДС (22%):       ${vatSum.toStringAsFixed(2)} руб.');
+    sb.writeln('• ИТОГО с НДС:     ${totalSumWithVat.toStringAsFixed(2)} руб.');
     sb.writeln('--------------------------------------------------------------------');
     sb.writeln('СПЕЦИФИКАЦИЯ ДЛЯ 1С / КП:');
     sb.writeln(_buildSpecificationLine());
@@ -605,6 +616,25 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     await File(outPath).writeAsString(sb.toString(), encoding: utf8);
     _showSnack('ТЗ сохранено: $outPath');
     await OpenFilex.open(outPath);
+  }
+
+  void _copyClientEmailTemplate(double totalWithVat, double totalDm2) {
+    final title = _orderNameController.text.trim().isEmpty ? 'платы' : _orderNameController.text.trim();
+    final qty = _qtyController.text.trim();
+    final text = '''Здравствуйте!
+Благодарим за обращение на завод «ЭЛЕКТРОконнект».
+
+По результатам проверки производственных файлов проекта «$title» ($qty шт., общая площадь партии: ${totalDm2.toStringAsFixed(2)} дм²):
+• Габариты и класс точности соответствуют стандартам технологического регламента.
+• Предварительная стоимость партии с учетом НДС 22%: ${totalWithVat.toStringAsFixed(2)} руб.
+
+Ждем ваше подтверждение запуска в производство!
+
+С уважением,
+ООО «ЭЛЕКТРОконнект»''';
+
+    Clipboard.setData(ClipboardData(text: text));
+    _showSnack('Шаблон письма клиенту скопирован в буфер обмена!');
   }
 
   Future<void> _openPselectroCalculator() async {
@@ -667,11 +697,18 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   @override
   Widget build(BuildContext context) {
     const accent = Color(0xFF0284C7);
-    final w = double.tryParse(_widthController.text.replaceAll(',', '.'));
-    final h = double.tryParse(_heightController.text.replaceAll(',', '.'));
+    final w = double.tryParse(_widthController.text.replaceAll(',', '.')) ?? 0;
+    final h = double.tryParse(_heightController.text.replaceAll(',', '.')) ?? 0;
     final qty = int.tryParse(_qtyController.text.trim()) ?? 10;
-    final singleAreaDm2 = (w != null && h != null) ? (w * h) / 10000.0 : null;
-    final totalAreaDm2 = singleAreaDm2 != null ? singleAreaDm2 * math.max(qty, 1) : null;
+    final singleAreaDm2 = (w > 0 && h > 0) ? (w * h) / 10000.0 : null;
+    final totalAreaDm2 = singleAreaDm2 != null ? singleAreaDm2 * math.max(qty, 1) : 0.0;
+
+    final baseP = double.tryParse(_basePriceDm2Controller.text.replaceAll(',', '.')) ?? 528.0;
+    final setupP = double.tryParse(_setupFeeController.text.replaceAll(',', '.')) ?? 2400.0;
+    final pureSum = (totalAreaDm2 * baseP) + setupP;
+    final vatSum = pureSum * 0.22;
+    final totalSumWithVat = pureSum + vatSum;
+
     final dfmChecks = _evaluateElectroconnectDfm();
     final specLine = _buildSpecificationLine();
 
@@ -693,8 +730,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
             const Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('ЭЛЕКТРОконнект — CAM & DFM Контроль', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                Text('Анализ Gerber / Excellon • Проверка норм завода • Подготовка ТЗ и КП', style: TextStyle(fontSize: 11.5, color: Colors.grey)),
+                Text('ЭЛЕКТРОконнект — CAM & DFM Контроль (Кувезенков А.А.)', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                Text('Анализ Gerber • Проверка норм завода • Расчет цены и ТЗ', style: TextStyle(fontSize: 11, color: Colors.grey)),
               ],
             ),
           ],
@@ -757,7 +794,6 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    // ЛЕВАЯ КОЛОНКА: ПАРАМЕТРЫ ЗАКАЗА И СПЕЦИФИКАЦИЯ
                     Expanded(
                       flex: 6,
                       child: Container(
@@ -766,13 +802,13 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text('1. Параметры платы и спецификация', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                            const Text('1. Параметры платы и расчет стоимости', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
                             const SizedBox(height: 14),
                             Row(
                               children: [
-                                Expanded(child: _inputField(controller: _customerController, label: 'Заказчик (например: ФГУП "18 ЦНИИ")', icon: Icons.business_rounded)),
+                                Expanded(child: _inputField(controller: _customerController, label: 'Заказчик', icon: Icons.business_rounded)),
                                 const SizedBox(width: 10),
-                                Expanded(child: _inputField(controller: _orderNameController, label: 'Децимальный номер / название платы', icon: Icons.tag_rounded)),
+                                Expanded(child: _inputField(controller: _orderNameController, label: 'Децимальный номер', icon: Icons.tag_rounded)),
                               ],
                             ),
                             const SizedBox(height: 12),
@@ -787,20 +823,41 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                 Expanded(child: _inputField(controller: _qtyController, label: 'Тираж, шт.', keyboardType: TextInputType.number)),
                               ],
                             ),
+                            const SizedBox(height: 12),
+                            Row(
+                              children: [
+                                Expanded(child: _inputField(controller: _basePriceDm2Controller, label: 'Цена за 1 дм², руб.', keyboardType: TextInputType.number)),
+                                const SizedBox(width: 10),
+                                Expanded(child: _inputField(controller: _setupFeeController, label: 'Подготовка, руб.', keyboardType: TextInputType.number)),
+                              ],
+                            ),
                             if (singleAreaDm2 != null) ...[
                               const SizedBox(height: 10),
                               Container(
                                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                                 decoration: BoxDecoration(
-                                  color: const Color(0xFF10B981).withOpacity(0.12),
+                                  color: const Color(0xFF0284C7).withOpacity(0.12),
                                   borderRadius: BorderRadius.circular(10),
-                                  border: Border.all(color: const Color(0xFF10B981).withOpacity(0.35)),
+                                  border: Border.all(color: const Color(0xFF0284C7).withOpacity(0.35)),
                                 ),
-                                child: Row(
-                                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
-                                    Text('Площадь 1 платы: ${singleAreaDm2.toStringAsFixed(3)} дм²', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-                                    Text('Площадь партии ($qty шт.): ${totalAreaDm2!.toStringAsFixed(2)} дм²', style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold, color: Color(0xFF10B981))),
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Text('Площадь 1 шт: ${singleAreaDm2.toStringAsFixed(3)} дм²', style: const TextStyle(fontSize: 12.5)),
+                                        Text('Партия: ${totalAreaDm2.toStringAsFixed(2)} дм²', style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold)),
+                                      ],
+                                    ),
+                                    const Divider(height: 12),
+                                    Row(
+                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                      children: [
+                                        Text('ИТОГО с НДС (22%):', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: _subtleText)),
+                                        Text('${totalSumWithVat.toStringAsFixed(2)} руб.', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF0284C7))),
+                                      ],
+                                    ),
                                   ],
                                 ),
                               ),
@@ -820,11 +877,11 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                             const SizedBox(height: 12),
                             Row(
                               children: [
-                                Expanded(child: _dropdownField(label: 'Паяльная маска', value: _maskSide, items: const ['С двух сторон', 'С одной стороны', 'Без маски'], onChanged: (v) => setState(() => _maskSide = v!))),
+                                Expanded(child: _dropdownField(label: 'Маска', value: _maskSide, items: const ['С двух сторон', 'С одной стороны', 'Без маски'], onChanged: (v) => setState(() => _maskSide = v!))),
                                 const SizedBox(width: 10),
                                 Expanded(child: _dropdownField(label: 'Цвет маски', value: _maskColor, items: const ['Зеленая', 'Синяя', 'Черная', 'Белая', 'Красная'], onChanged: (v) => setState(() => _maskColor = v!))),
                                 const SizedBox(width: 10),
-                                Expanded(child: _dropdownField(label: 'Финишное покрытие', value: _finish, items: const ['HAL', 'Иммерсионное золото', 'Иммерсионное олово', 'Без покрытия'], onChanged: (v) => setState(() => _finish = v!))),
+                                Expanded(child: _dropdownField(label: 'Покрытие', value: _finish, items: const ['HAL', 'Иммерсионное золото', 'Иммерсионное олово', 'Без покрытия'], onChanged: (v) => setState(() => _finish = v!))),
                               ],
                             ),
                             const SizedBox(height: 12),
@@ -832,7 +889,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                               children: [
                                 Expanded(child: _dropdownField(label: 'Маркировка', value: _silkSide, items: const ['С двух сторон', 'С одной стороны', 'Без маркировки'], onChanged: (v) => setState(() => _silkSide = v!))),
                                 const SizedBox(width: 10),
-                                Expanded(child: _dropdownField(label: 'Цвет маркировки', value: _silkColor, items: const ['Белая', 'Черная'], onChanged: (v) => setState(() => _silkColor = v!))),
+                                Expanded(child: _dropdownField(label: 'Цвет марк.', value: _silkColor, items: const ['Белая', 'Черная'], onChanged: (v) => setState(() => _silkColor = v!))),
                                 const SizedBox(width: 10),
                                 Expanded(child: _dropdownField(label: 'Контур', value: _contour, items: const ['фрезеровка', 'скрайбирование'], onChanged: (v) => setState(() => _contour = v!))),
                               ],
@@ -856,9 +913,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                               ],
                             ),
                             const SizedBox(height: 12),
-                            _inputField(controller: _notesController, label: 'Особые требования / примечание для конструкторов', icon: Icons.notes_rounded),
+                            _inputField(controller: _notesController, label: 'Примечание для ТЗ', icon: Icons.notes_rounded),
                             const SizedBox(height: 16),
-                            const Text('Готовая строка спецификации (для 1С / КП / Счёта-договора):', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold)),
+                            const Text('Готовая строка спецификации (для 1С / КП):', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold)),
                             const SizedBox(height: 6),
                             Container(
                               width: double.infinity,
@@ -868,49 +925,37 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                 borderRadius: BorderRadius.circular(10),
                                 border: Border.all(color: _borderCol),
                               ),
-                              child: SelectableText(specLine, style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w500)),
+                              child: SelectableText(specLine, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
                             ),
                             const SizedBox(height: 14),
-                            Row(
+                            Wrap(
+                              spacing: 8,
+                              runSpacing: 8,
                               children: [
-                                Expanded(
-                                  child: ElevatedButton.icon(
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: const Color(0xFF0D9488),
-                                      foregroundColor: Colors.white,
-                                      padding: const EdgeInsets.symmetric(vertical: 14),
-                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                                    ),
-                                    icon: const Icon(Icons.copy_rounded, size: 18),
-                                    label: const Text('КОПИРОВАТЬ ДЛЯ 1С / КП', style: TextStyle(fontWeight: FontWeight.bold)),
-                                    onPressed: () {
-                                      Clipboard.setData(ClipboardData(text: specLine));
-                                      _showSnack('Строка спецификации скопирована!');
-                                    },
-                                  ),
+                                ElevatedButton.icon(
+                                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0D9488), foregroundColor: Colors.white),
+                                  icon: const Icon(Icons.copy_rounded, size: 16),
+                                  label: const Text('Копировать строку КП'),
+                                  onPressed: () {
+                                    Clipboard.setData(ClipboardData(text: specLine));
+                                    _showSnack('Строка спецификации скопирована!');
+                                  },
                                 ),
-                                const SizedBox(width: 10),
-                                Expanded(
-                                  child: ElevatedButton.icon(
-                                    style: ElevatedButton.styleFrom(
-                                      backgroundColor: accent,
-                                      foregroundColor: Colors.white,
-                                      padding: const EdgeInsets.symmetric(vertical: 14),
-                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                                    ),
-                                    icon: const Icon(Icons.description_rounded, size: 18),
-                                    label: const Text('СОХРАНИТЬ ТЗ (.TXT)', style: TextStyle(fontWeight: FontWeight.bold)),
-                                    onPressed: _exportConstructorTzFile,
-                                  ),
+                                ElevatedButton.icon(
+                                  style: ElevatedButton.styleFrom(backgroundColor: accent, foregroundColor: Colors.white),
+                                  icon: const Icon(Icons.description_rounded, size: 16),
+                                  label: const Text('Сохранить ТЗ (.TXT)'),
+                                  onPressed: _exportConstructorTzFile,
                                 ),
-                                const SizedBox(width: 10),
+                                ElevatedButton.icon(
+                                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF10B981), foregroundColor: Colors.white),
+                                  icon: const Icon(Icons.email_outlined, size: 16),
+                                  label: const Text('Шаблон письма клиенту'),
+                                  onPressed: () => _copyClientEmailTemplate(totalSumWithVat, totalAreaDm2),
+                                ),
                                 OutlinedButton.icon(
-                                  style: OutlinedButton.styleFrom(
-                                    padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-                                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-                                  ),
-                                  icon: const Icon(Icons.calculate_outlined, size: 18),
-                                  label: const Text('Калькулятор'),
+                                  icon: const Icon(Icons.calculate_outlined, size: 16),
+                                  label: const Text('Калькулятор сайта'),
                                   onPressed: _openPselectroCalculator,
                                 ),
                               ],
@@ -920,7 +965,6 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                       ),
                     ),
                     const SizedBox(width: 18),
-                    // ПРАВАЯ КОЛОНКА: DFM-ИНСПЕКТОР И ТАБЛИЦА СВЕРЛОВКИ
                     Expanded(
                       flex: 5,
                       child: Column(
@@ -935,7 +979,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                   children: [
                                     Icon(Icons.verified_user_rounded, color: Color(0xFF10B981), size: 22),
                                     SizedBox(width: 8),
-                                    Text('2. DFM-контроль (нормы ЭЛЕКТРОконнект)', style: TextStyle(fontSize: 15.5, fontWeight: FontWeight.bold)),
+                                    Text('2. DFM-контроль (ЭЛЕКТРОконнект)', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
                                   ],
                                 ),
                                 const SizedBox(height: 12),
@@ -946,12 +990,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     decoration: BoxDecoration(
                                       color: Colors.amberAccent.withOpacity(0.14),
                                       borderRadius: BorderRadius.circular(10),
-                                      border: Border.all(color: Colors.amberAccent.withOpacity(0.45)),
                                     ),
-                                    child: const Text(
-                                      'В архиве обнаружен бинарный файл P-CAD (.BRD) без текстового контура — укажите длину X и ширину Y вручную слева.',
-                                      style: TextStyle(fontSize: 12.5),
-                                    ),
+                                    child: const Text('В архиве бинарный .BRD без контура — укажите X и Y вручную.', style: TextStyle(fontSize: 12)),
                                   ),
                                 ...dfmChecks.map((chk) {
                                   final col = chk.level == 'error'
@@ -962,7 +1002,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                       : (chk.level == 'warn' ? Icons.warning_amber_rounded : Icons.check_circle_rounded);
                                   return Container(
                                     margin: const EdgeInsets.only(bottom: 8),
-                                    padding: const EdgeInsets.all(11),
+                                    padding: const EdgeInsets.all(10),
                                     decoration: BoxDecoration(
                                       color: col.withOpacity(0.1),
                                       borderRadius: BorderRadius.circular(10),
@@ -971,15 +1011,15 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     child: Row(
                                       crossAxisAlignment: CrossAxisAlignment.start,
                                       children: [
-                                        Icon(icon, color: col, size: 19),
+                                        Icon(icon, color: col, size: 18),
                                         const SizedBox(width: 8),
                                         Expanded(
                                           child: Column(
                                             crossAxisAlignment: CrossAxisAlignment.start,
                                             children: [
-                                              Text(chk.title, style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: col)),
+                                              Text(chk.title, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: col)),
                                               const SizedBox(height: 2),
-                                              Text(chk.detail, style: TextStyle(fontSize: 12, color: _subtleText)),
+                                              Text(chk.detail, style: TextStyle(fontSize: 11.5, color: _subtleText)),
                                             ],
                                           ),
                                         ),
@@ -998,7 +1038,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text('3. Слои и сверловка (${_analysis!.totalHoles} отв.)', style: const TextStyle(fontSize: 15.5, fontWeight: FontWeight.bold)),
+                                  Text('3. Состав архива и сверловка (${_analysis!.totalHoles} отв.)', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
                                   const SizedBox(height: 10),
                                   ..._analysis!.layers.map((l) => Padding(
                                         padding: const EdgeInsets.symmetric(vertical: 3),
@@ -1006,22 +1046,22 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                           children: [
                                             const Icon(Icons.insert_drive_file_outlined, size: 15, color: accent),
                                             const SizedBox(width: 6),
-                                            Expanded(child: Text(l.fileName, style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600))),
-                                            Text(l.role, style: TextStyle(fontSize: 11.5, color: _subtleText)),
+                                            Expanded(child: Text(l.fileName, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600))),
+                                            Text(l.role, style: TextStyle(fontSize: 11, color: _subtleText)),
                                           ],
                                         ),
                                       )),
                                   if (_analysis!.drillToolsBreakdown.isNotEmpty) ...[
-                                    Divider(height: 20, color: _borderCol),
-                                    const Text('Инструменты сверловки (.DRL):', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-                                    const SizedBox(height: 8),
+                                    const Divider(height: 18),
+                                    const Text('Инструменты сверловки (.DRL):', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold)),
+                                    const SizedBox(height: 6),
                                     Wrap(
                                       spacing: 6,
                                       runSpacing: 6,
                                       children: (_analysis!.drillToolsBreakdown.entries.toList()..sort((a, b) => a.key.compareTo(b.key)))
                                           .map((e) => Chip(
                                                 visualDensity: VisualDensity.compact,
-                                                label: Text('Ø ${e.key} мм — ${e.value} шт.', style: const TextStyle(fontSize: 11.5)),
+                                                label: Text('Ø ${e.key} мм — ${e.value} шт.', style: const TextStyle(fontSize: 11)),
                                               ))
                                           .toList(),
                                     ),
