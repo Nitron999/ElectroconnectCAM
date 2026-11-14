@@ -1,1 +1,38 @@
+name: Build Electroconnect CAM Windows
 
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build_windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: 'stable'
+          cache: true
+
+      - name: Initialize Windows platform files
+        run: flutter create --platforms=windows .
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build Windows Release
+        run: flutter build windows --release
+
+      - name: Package Release ZIP
+        run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath ElectroconnectCAM_Windows.zip -Force
+
+      - name: Upload Windows Executable Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ElectroconnectCAM-Windows-Release
+          path: ElectroconnectCAM_Windows.zip
