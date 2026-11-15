@@ -166,6 +166,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   final TextEditingController _minTrackController = TextEditingController(text: '0.15');
   final TextEditingController _minHoleController = TextEditingController(text: '0.30');
   final TextEditingController _notesController = TextEditingController();
+  final TextEditingController _managerController = TextEditingController(text: 'Крылова Людмила Борисовна');
 
   final TextEditingController _basePriceDm2Controller = TextEditingController(text: '466.0');
   final TextEditingController _setupFeeController = TextEditingController(text: '2406.0');
@@ -831,7 +832,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       if (outJson.existsSync()) outJson.deleteSync();
 
       final ext = docPath.split('.').last.toLowerCase();
-      final cleanDocPath = '${tempDir.path}\\clean_doc_${DateTime.now().millisecondsSinceEpoch}.$ext';
+      final cleanDocPath = '${tempDir.path}\\clean_doc_${DateTime.now().microsecondsSinceEpoch}.$ext';
       await File(docPath).copy(cleanDocPath);
 
       await pyFile.writeAsString(_buildDocParserPythonCode(), encoding: utf8);
@@ -1155,7 +1156,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
             }
           } else if (low.endsWith('.rar') || low.endsWith('.7z')) {
             final tempRarPath = await _saveTempBytes(sessionUnpackDir, 'nested_$rawName', fileBytes);
-            final nestedOutDir = Directory('${sessionUnpackDir.path}${Platform.pathSeparator}unpacked_${DateTime.now().millisecondsSinceEpoch}');
+            final nestedOutDir = Directory('${sessionUnpackDir.path}${Platform.pathSeparator}unpacked_${DateTime.now().microsecondsSinceEpoch}');
             final ok = await _extractExternalArchiveToDir(tempRarPath, nestedOutDir);
             if (ok && nestedOutDir.existsSync()) {
               for (final entity in nestedOutDir.listSync(recursive: true)) {
@@ -1188,7 +1189,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       bool hasBinaryBrd = false;
       bool hasCadSourceOnly = false;
       bool hasTextContour = false;
-      String? foundDocPath;
+      final List foundExcelPaths = [];
+      final List foundPdfPaths = [];
 
       double? detectedWidth;
       double? detectedHeight;
@@ -1213,11 +1215,11 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         } else if (upper.endsWith('.XLS') || upper.endsWith('.XLSX')) {
           role = 'Бланк заказа / КП (читается автоматически)';
           importantDoc = true;
-          foundDocPath = savedPath;
+          foundExcelPaths.add(savedPath);
         } else if (upper.endsWith('.PDF')) {
           role = 'Запрос ТКП / чертёж PDF (читается автоматически)';
           importantDoc = true;
-          foundDocPath ??= savedPath;
+          foundPdfPaths.add(savedPath);
         } else if (upper.endsWith('.PNG') || upper.endsWith('.JPG') || upper.endsWith('.JPEG')) {
           role = 'Чертёж / стек слоёв / ламели (кликните для просмотра)';
           importantDoc = true;
@@ -1339,11 +1341,13 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       detectedWidth ??= fallbackCopperWidth;
       detectedHeight ??= fallbackCopperHeight;
 
-      List parsedBoards = [];
-      if (foundDocPath != null) {
-        final rawBoards = await _parseDocumentBlank(foundDocPath);
+      // Парсим ВСЕ найденные бланки Excel и PDF в архиве (а не только один!)
+      final List parsedBoards = [];
+      final docsToParse = foundExcelPaths.isNotEmpty ? foundExcelPaths : foundPdfPaths;
+      for (final docP in docsToParse) {
+        final rawBoards = await _parseDocumentBlank(docP.toString());
         if (rawBoards is List) {
-          parsedBoards = rawBoards;
+          parsedBoards.addAll(rawBoards);
         }
       }
 
@@ -1420,7 +1424,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       });
 
       if (parsedBoards.length > 1) {
-        _showSnack('В документе найдено ${parsedBoards.length} позиций — переключайтесь сверху и формируйте КП!');
+        _showSnack('В архиве найдено ${parsedBoards.length} плат! Переключайтесь сверху или жмите «Сформировать КП».');
       } else if (firstBoard != null) {
         _showSnack('Параметры загружены из документа!');
       } else if (hasUnpackedNestedArchive) {
@@ -1687,7 +1691,23 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         'маска: $maskPart; маркировка: $silkPart; $_finish; $testPart$stackTag';
   }
 
-  Future<void> _generateOfficialKpDocument() async {
+  /// Форматирует число с пробелом тысяч и запятой (как в официальном КП № 2054: "3 192,70")
+  String _fmtRuMoney(double val) {
+    final fixed = val.toStringAsFixed(2);
+    final parts = fixed.split('.');
+    final intPart = parts[0];
+    final decPart = parts[1];
+    final buf = StringBuffer();
+    for (int i = 0; i < intPart.length; i++) {
+      if (i > 0 && (intPart.length - i) % 3 == 0) {
+        buf.write(' ');
+      }
+      buf.write(intPart[i]);
+    }
+    return '${buf.toString()},$decPart';
+  }
+
+  Future<void> _generateOfficialKpDocument({bool saveAsPdf = false}) async {
     _syncCurrentFormBackToBoardList();
 
     final now = DateTime.now();
@@ -1700,6 +1720,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     final customerName = _customerController.text.trim().isEmpty
         ? 'ООО «Заказчик»'
         : _customerController.text.trim();
+    final managerName = _managerController.text.trim().isEmpty
+        ? 'Крылова Людмила Борисовна'
+        : _managerController.text.trim();
 
     final List itemsToRender = [];
 
@@ -1742,10 +1765,10 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         final unitPriceNoVat = pureSum / math.max(qty, 1);
         final vatSum = pureSum * 0.22;
         final totalWithVat = pureSum + vatSum;
-        final leadDays = urg == 'СуперЭкспресс' ? 4 : (urg == 'Экспресс' ? 6 : (layers >= 4 ? 14 : 9));
+        final leadDays = urg == 'СуперЭкспресс' ? 4 : (urg == 'Экспресс' ? 6 : 14);
 
-        final spec = '$oType; $layers сл; ${effW.toStringAsFixed(0)}x${effH.toStringAsFixed(0)} мм; $contour; '
-            '$mat-${thick}мм-${foil}мкм; маска: $maskSide $maskColor; маркировка: $silkSide Белая; '
+        final spec = '$oType; $layers сл; ${effW.toStringAsFixed(0)}х${effH.toStringAsFixed(0)} мм; $contour; '
+            '$mat-${thick} мм-${foil} мкм; маска: $maskSide $maskColor; маркировка: $silkSide Белая; '
             '$fin; ${eTest ? "Эл. тест." : "Без эл. теста."}';
 
         itemsToRender.add({
@@ -1775,7 +1798,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       final unitPriceNoVat = pureSum / math.max(qty, 1);
       final vatSum = pureSum * 0.22;
       final totalWithVat = pureSum + vatSum;
-      final leadDays = _urgency == 'СуперЭкспресс' ? 4 : (_urgency == 'Экспресс' ? 6 : (_layersCount >= 4 ? 14 : 9));
+      final leadDays = _urgency == 'СуперЭкспресс' ? 4 : (_urgency == 'Экспресс' ? 6 : 14);
 
       itemsToRender.add({
         'idx': 1,
@@ -1803,19 +1826,19 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       grandWithVat += it['totalWithVat'] as double;
 
       rowsHtml.writeln('''
-        <tr>
-          <td class="c" rowspan="2">${it['idx']}</td>
-          <td class="b">${it['name']}</td>
+        <tr class="item-top">
+          <td class="c num-cell" rowspan="2">${it['idx']}</td>
+          <td class="item-title">${it['name']}</td>
           <td class="c" rowspan="2">${it['days']}</td>
-          <td class="r" rowspan="2">${(it['area'] as double).toStringAsFixed(2)}</td>
+          <td class="r" rowspan="2">${_fmtRuMoney(it['area'] as double)}</td>
           <td class="c" rowspan="2">шт.</td>
           <td class="r" rowspan="2">${it['qty']}</td>
-          <td class="r" rowspan="2">${(it['unitPrice'] as double).toStringAsFixed(2)}</td>
-          <td class="r" rowspan="2">${(it['sumNoVat'] as double).toStringAsFixed(2)}</td>
-          <td class="r" rowspan="2">${(it['vat'] as double).toStringAsFixed(2)}</td>
-          <td class="r b" rowspan="2">${(it['totalWithVat'] as double).toStringAsFixed(2)}</td>
+          <td class="r" rowspan="2">${_fmtRuMoney(it['unitPrice'] as double)}</td>
+          <td class="r" rowspan="2">${_fmtRuMoney(it['sumNoVat'] as double)}</td>
+          <td class="r" rowspan="2">${_fmtRuMoney(it['vat'] as double)}</td>
+          <td class="r b" rowspan="2">${_fmtRuMoney(it['totalWithVat'] as double)}</td>
         </tr>
-        <tr>
+        <tr class="item-bot">
           <td class="spec">${it['spec']}</td>
         </tr>
       ''');
@@ -1827,50 +1850,128 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
 <meta charset="UTF-8">
 <title>КП № $kpNum — $customerName</title>
 <style>
-  @page { size: A4 landscape; margin: 12mm; }
-  body { font-family: Arial, Helvetica, sans-serif; font-size: 11px; color: #000; margin: 20px; }
-  .header-table { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
-  .brand { font-size: 22px; font-weight: bold; color: #0b5394; letter-spacing: 0.5px; }
-  .brand span { color: #111; font-weight: normal; }
-  .sub-brand { font-size: 12px; font-weight: bold; color: #0b5394; text-align: right; }
-  .contacts { font-size: 10.5px; color: #222; }
-  .customer-box { margin: 12px 0; font-size: 12px; }
-  .title-kp { text-align: center; font-size: 14px; font-weight: bold; margin: 14px 0; }
-  table.main { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
-  table.main th, table.main td { border: 1px solid #444; padding: 5px 6px; vertical-align: middle; }
-  table.main th { background-color: #f0f4f8; font-weight: bold; text-align: center; font-size: 10.5px; }
+  @page { size: A4 landscape; margin: 10mm 12mm; }
+  body {
+    font-family: Arial, Helvetica, sans-serif;
+    font-size: 11pt;
+    color: #000000;
+    margin: 18px 24px;
+    background: #ffffff;
+  }
+  .header-table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
+  .logo-wrap { display: inline-flex; align-items: center; gap: 6px; }
+  .logo-icon {
+    width: 26px; height: 26px; border-radius: 50%;
+    border: 3.5px solid #1b75bc; border-right-color: transparent;
+    display: inline-block; position: relative;
+  }
+  .logo-icon::after {
+    content: ""; position: absolute; right: -4px; top: 8px;
+    width: 12px; height: 3.5px; background: #1b75bc;
+  }
+  .brand-blue { font-size: 23pt; font-weight: bold; color: #1b75bc; letter-spacing: -0.5px; }
+  .brand-black { font-size: 23pt; font-weight: normal; color: #111111; letter-spacing: -0.5px; }
+  .sub-brand { font-size: 12.5pt; font-weight: bold; color: #1b75bc; text-align: right; letter-spacing: 0.3px; }
+  .contacts { font-size: 10pt; color: #111111; margin-top: 2px; }
+  .customer-line { margin: 14px 0 10px 0; font-size: 11.5pt; }
+  .customer-line b { font-weight: bold; }
+  .customer-val { margin-left: 18px; }
+  .title-kp {
+    text-align: center;
+    font-size: 13pt;
+    font-weight: bold;
+    margin: 14px 0 12px 0;
+  }
+  table.main {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 12px;
+    font-size: 10pt;
+  }
+  table.main th {
+    border: 1px solid #888888;
+    background-color: #ffffff;
+    font-weight: bold;
+    text-align: center;
+    padding: 5px 5px;
+    line-height: 1.2;
+  }
+  table.main td {
+    border: 1px solid #888888;
+    padding: 4px 6px;
+    vertical-align: middle;
+  }
+  table.main tr.item-top td.item-title {
+    border-bottom: 1px solid #cccccc;
+    font-weight: normal;
+    padding-top: 5px;
+    padding-bottom: 4px;
+  }
+  table.main tr.item-bot td.spec {
+    border-top: none;
+    font-size: 9.5pt;
+    color: #111111;
+    padding-top: 4px;
+    padding-bottom: 5px;
+  }
   .c { text-align: center; }
   .r { text-align: right; white-space: nowrap; }
   .b { font-weight: bold; }
-  .spec { font-size: 10px; color: #222; background: #fafafa; }
-  .totals { width: 100%; margin-top: 8px; }
-  .totals td { padding: 3px 6px; font-size: 12px; }
-  .notice { border: 1.5px solid #000; padding: 5px 14px; font-weight: bold; display: inline-block; margin: 10px 0; }
-  .terms { font-size: 10.5px; line-height: 1.45; margin-top: 8px; }
-  .footer-sign { margin-top: 22px; font-size: 11.5px; }
-  @media print { .no-print { display: none; } body { margin: 0; } }
+  .delivery-row { margin: 10px 0 14px 0; font-size: 11pt; }
+  .delivery-row b { font-weight: bold; margin-right: 18px; }
+  .totals-box { float: right; margin-top: -34px; font-size: 10.5pt; border-collapse: collapse; }
+  .totals-box td { padding: 2px 8px; }
+  .clear { clear: both; }
+  .notice-wrap { text-align: center; margin: 12px 0 14px 0; }
+  .notice {
+    border: 1.5px solid #000000;
+    padding: 4px 26px;
+    font-weight: bold;
+    font-size: 11pt;
+    display: inline-block;
+    letter-spacing: 0.4px;
+  }
+  .terms {
+    font-size: 10pt;
+    line-height: 1.4;
+    margin-top: 8px;
+  }
+  .footer-sign {
+    margin-top: 24px;
+    font-size: 11pt;
+  }
+  .footer-sign span {
+    margin-left: 36px;
+  }
+  @media print {
+    .no-print { display: none !important; }
+    body { margin: 0; }
+  }
 </style>
 </head>
 <body>
-<div class="no-print" style="background:#e0f2fe;padding:10px;border-radius:8px;margin-bottom:14px;border:1px solid #0284c7;">
-  <b>Готово!</b> Нажмите <b>Ctrl + P</b> и выберите <b>«Сохранить как PDF»</b> (альбомная ориентация), чтобы отправить официальное КП заказчику.
+<div class="no-print" style="background:#e0f2fe;padding:10px 14px;border-radius:8px;margin-bottom:14px;border:1px solid #0284c7;font-size:12px;">
+  <b>Официальный бланк КП № $kpNum готов!</b> Нажмите <b>Ctrl + P</b> → <b>«Сохранить как PDF»</b> (альбомная ориентация, поля «По умолчанию»).
 </div>
 
 <table class="header-table">
   <tr>
-    <td>
-      <div class="brand">электро<span>коннект</span></div>
-      <div class="contacts">Тел : + (383) 3361001 , 3361003</div>
+    <td style="vertical-align:top;">
+      <div class="logo-wrap">
+        <span class="logo-icon"></span>
+        <span><span class="brand-blue">электро</span><span class="brand-black">коннект</span></span>
+      </div>
+      <div class="contacts">Тел : &nbsp;+ (383) 3361001 , 3361003</div>
     </td>
-    <td style="text-align:right;vertical-align:bottom;">
+    <td style="text-align:right;vertical-align:top;padding-top:6px;">
       <div class="sub-brand">РОССИЙСКИЙ ЗАВОД ПЕЧАТНЫХ ПЛАТ</div>
-      <div class="contacts">www.pselectro.ru &nbsp;&nbsp;&nbsp; order@pselectro.ru</div>
+      <div class="contacts">www.pselectro.ru &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; order@pselectro.ru</div>
     </td>
   </tr>
 </table>
 
-<div class="customer-box">
-  <b>Заказчик :</b> &nbsp;&nbsp; $customerName
+<div class="customer-line">
+  <b>Заказчик :</b> <span class="customer-val">$customerName</span>
 </div>
 
 <div class="title-kp">
@@ -1880,14 +1981,14 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
 <table class="main">
   <thead>
     <tr>
-      <th style="width:28px;">№</th>
+      <th style="width:26px;">№</th>
       <th>Наименование товара</th>
-      <th style="width:72px;">Срок изготовления (рабочих дней)</th>
-      <th style="width:65px;">Площадь (кв.дм.)</th>
-      <th style="width:42px;">Ед.изм</th>
-      <th style="width:48px;">Кол-во</th>
+      <th style="width:82px;">Срок<br>изготовления<br>(рабочих дней)</th>
+      <th style="width:66px;">Площадь<br>(кв.дм.)</th>
+      <th style="width:44px;">Ед.изм</th>
+      <th style="width:46px;">Кол-<br>во</th>
       <th style="width:68px;">Цена</th>
-      <th style="width:75px;">Сумма</th>
+      <th style="width:76px;">Сумма</th>
       <th style="width:68px;">НДС 22%</th>
       <th style="width:82px;">Сумма с НДС</th>
     </tr>
@@ -1897,47 +1998,82 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   </tbody>
 </table>
 
-<table class="totals">
+<div class="delivery-row">
+  <b>Доставка до :</b> Самовывоз
+</div>
+
+<table class="totals-box">
   <tr>
-    <td style="width:70%;"><b>Доставка до :</b> &nbsp;&nbsp; Самовывоз</td>
+    <td class="r">Итого без НДС:</td>
+    <td class="r b">${_fmtRuMoney(grandNoVat)} руб.</td>
+  </tr>
+  <tr>
+    <td class="r">НДС 22%:</td>
+    <td class="r">${_fmtRuMoney(grandVat)} руб.</td>
+  </tr>
+  <tr>
     <td class="r b">Итого с НДС:</td>
-    <td class="r b" style="width:110px;">${grandWithVat.toStringAsFixed(2)} руб.</td>
-  </tr>
-  <tr>
-    <td></td>
-    <td class="r">В том числе НДС (22%):</td>
-    <td class="r">${grandVat.toStringAsFixed(2)} руб.</td>
-  </tr>
-  <tr>
-    <td></td>
-    <td class="r">Без НДС:</td>
-    <td class="r">${grandNoVat.toStringAsFixed(2)} руб.</td>
+    <td class="r b">${_fmtRuMoney(grandWithVat)} руб.</td>
   </tr>
 </table>
+<div class="clear"></div>
 
-<div style="text-align:center;">
+<div class="notice-wrap">
   <div class="notice">НЕ ЯВЛЯЕТСЯ ОСНОВАНИЕМ ДЛЯ ОПЛАТЫ</div>
 </div>
 
 <div class="terms">
-  1. Настоящее коммерческое предложение подготовлено на основе предоставленных сведений. В случае внесения изменений в исходные данные, стоимость и сроки изготовления могут быть скорректированы.<br>
-  2. Предложение действительно 5 рабочих дней.<br>
-  3. Оплата заказа производится на основании счета-договора.<br>
-  4. При наличии доставки, она включена в стоимость и указан адрес или город получателя в графе "Доставка до".
+  1. &nbsp;Настоящее коммерческое предложение подготовлено на основе предоставленных сведений. В случае внесения изменений в исходные данные, стоимость и сроки изготовления могут быть скорректированы.<br>
+  2. &nbsp;Предложение действительно 5 рабочих дней.<br>
+  3. &nbsp;Оплата заказа производится на основании счета-договора.<br>
+  4. &nbsp;При наличии доставки, она включена в стоимость и указан адрес или город получателя в графе "Доставка до".
 </div>
 
 <div class="footer-sign">
-  Менеджер по работе с клиентами: _______________________________________
+  Менеджер по работе с клиентами <span>$managerName</span>
 </div>
 </body>
 </html>''';
 
     final dirPath = _analysis?.archiveDir ?? (await getApplicationDocumentsDirectory()).path;
     final safeCust = customerName.replaceAll(RegExp(r'[\\/:*?"<>|«»"]'), '_');
-    final outPath = '$dirPath${Platform.pathSeparator}КП_${kpNum}_$safeCust.html';
-    await File(outPath).writeAsString(htmlDoc, encoding: utf8);
-    _showSnack('Официальное КП № $kpNum сформировано: $outPath');
-    await OpenFilex.open(outPath);
+    final htmlPath = '$dirPath${Platform.pathSeparator}КП-${kpNum}_$safeCust.html';
+    await File(htmlPath).writeAsString(htmlDoc, encoding: utf8);
+
+    if (saveAsPdf && Platform.isWindows) {
+      final pdfPath = '$dirPath${Platform.pathSeparator}КП-${kpNum}_$safeCust.pdf';
+      const browsers = [
+        r'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe',
+        r'C:\Program Files\Microsoft\Edge\Application\msedge.exe',
+        r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+        r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+      ];
+      String? foundBrowser;
+      for (final b in browsers) {
+        if (File(b).existsSync()) {
+          foundBrowser = b;
+          break;
+        }
+      }
+      if (foundBrowser != null) {
+        final fileUri = Uri.file(htmlPath).toString();
+        await Process.run(foundBrowser, [
+          '--headless',
+          '--disable-gpu',
+          '--no-pdf-header-footer',
+          '--print-to-pdf=$pdfPath',
+          fileUri,
+        ]);
+        if (File(pdfPath).existsSync()) {
+          _showSnack('Официальный PDF-бланк КП № $kpNum сохранён: $pdfPath');
+          await OpenFilex.open(pdfPath);
+          return;
+        }
+      }
+    }
+
+    _showSnack('Официальное КП № $kpNum сформировано: $htmlPath');
+    await OpenFilex.open(htmlPath);
   }
 
   Future<void> _exportConstructorTzFile() async {
@@ -2291,8 +2427,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                             ),
                             Text(
                               _analysis != null
-                                  ? 'Найдено файлов: ${_analysis!.layers.length} • Отверстий: ${_analysis!.totalHoles} • Папка: ${_analysis!.archiveDir}'
-                                  : 'Автоматически читает заявки, запросы ТКП в PDF, готовые КП, Gerber и вложенные .RAR',
+                                  ? 'Найдено файлов: ${_analysis!.layers.length} • Позиций в заказе: ${_blankBoardsList.isEmpty ? 1 : _blankBoardsList.length} • Папка: ${_analysis!.archiveDir}'
+                                  : 'Автоматически читает все бланки в архиве, запросы ТКП в PDF, готовые КП и вложенные .RAR',
                               style: TextStyle(fontSize: 12.5, color: _subtleText),
                             ),
                           ],
@@ -2338,7 +2474,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                       runSpacing: 8,
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
-                        Text('В документе ${_blankBoardsList.length} поз.:', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                        Text('В архиве ${_blankBoardsList.length} плат:', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
                         for (int i = 0; i < _blankBoardsList.length; i++)
                           ChoiceChip(
                             label: Text(
@@ -2602,7 +2738,18 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                               ],
                             ),
                             const SizedBox(height: 12),
-                            _inputField(controller: _notesController, label: 'Примечание для ТЗ (стек, прессование, красные пометки)', icon: Icons.notes_rounded, triggerRecalc: true),
+                            Row(
+                              children: [
+                                Expanded(
+                                  flex: 2,
+                                  child: _inputField(controller: _notesController, label: 'Примечание для ТЗ (стек, прессование, красные пометки)', icon: Icons.notes_rounded, triggerRecalc: true),
+                                ),
+                                const SizedBox(width: 10),
+                                Expanded(
+                                  child: _inputField(controller: _managerController, label: 'Менеджер в КП', icon: Icons.person_outline_rounded),
+                                ),
+                              ],
+                            ),
                             const SizedBox(height: 16),
                             const Text('Готовая строка спецификации (для 1С / КП):', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold)),
                             const SizedBox(height: 6),
@@ -2623,9 +2770,15 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                               children: [
                                 ElevatedButton.icon(
                                   style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF7C3AED), foregroundColor: Colors.white),
+                                  icon: const Icon(Icons.picture_as_pdf_rounded, size: 16),
+                                  label: const Text('Сформировать КП (PDF)'),
+                                  onPressed: () => _generateOfficialKpDocument(saveAsPdf: true),
+                                ),
+                                ElevatedButton.icon(
+                                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF6D28D9), foregroundColor: Colors.white),
                                   icon: const Icon(Icons.request_quote_rounded, size: 16),
-                                  label: const Text('Сформировать КП (бланк)'),
-                                  onPressed: _generateOfficialKpDocument,
+                                  label: const Text('КП (HTML-бланк)'),
+                                  onPressed: () => _generateOfficialKpDocument(saveAsPdf: false),
                                 ),
                                 ElevatedButton.icon(
                                   style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2563EB), foregroundColor: Colors.white),
@@ -2697,7 +2850,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     ),
                                     child: Text(
                                       _blankBoardsList.length > 1
-                                          ? 'Из документа загружено позиций: ${_blankBoardsList.length} шт. Укажите размеры X/Y для каждой позиции и нажмите «Сформировать КП (бланк)»!'
+                                          ? 'Из архива загружено всех позиций: ${_blankBoardsList.length} шт. Переключайтесь между платами сверху и нажмите «Сформировать КП (PDF)»!'
                                           : 'Параметры (срочность «$_urgency», размеры X/Y, тираж, слои, покрытие и примечания) считаны из документа!',
                                       style: const TextStyle(fontSize: 12),
                                     ),
