@@ -306,7 +306,6 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     await OpenFilex.open(path);
   }
 
-  /// Автоматический парсинг стандартного Excel-бланка заявки ЭЛЕКТРОконнект (.xls / .xlsx)
   Future?> _parseElectroconnectExcelBlank(String excelPath) async {
     if (!Platform.isWindows) return null;
     try {
@@ -379,7 +378,6 @@ def main():
             continue
         label = non_empty[0].lower()
         val = non_empty[1]
-        # Если первая колонка - номер пункта, берём следующую пару
         if re.fullmatch(r"\\d+\\.?", label) and len(non_empty) >= 3:
             label = non_empty[1].lower()
             val = non_empty[2]
@@ -939,7 +937,6 @@ if __name__ == "__main__":
       detectedWidth ??= fallbackCopperWidth;
       detectedHeight ??= fallbackCopperHeight;
 
-      // Если в архиве найден бланк заказа Excel (.xls / .xlsx), парсим его автоматически!
       Map<String, dynamic>? blankData;
       if (foundExcelPath != null) {
         blankData = await _parseElectroconnectExcelBlank(foundExcelPath);
@@ -1008,7 +1005,6 @@ if __name__ == "__main__":
             ? 'С двух сторон'
             : ((hasTopSilk || hasBottomSilk) ? 'С одной стороны' : 'Без маркировки');
 
-        // Подставляем остальные данные из Excel-бланка заявки, если он был в архиве
         if (blankData != null) {
           if (blankData['customer'] != null && blankData['customer'].toString().isNotEmpty) {
             _customerController.text = blankData['customer'].toString();
