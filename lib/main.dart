@@ -129,7 +129,7 @@ class GerberAnalysisResult {
 class DfmCheckItem {
   final String title;
   final String detail;
-  final String level; // 'ok', 'warn', 'error'
+  final String level;
 
   DfmCheckItem({
     required this.title,
@@ -700,6 +700,13 @@ if __name__ == "__main__":
     }
   }
 
+  Future<String> _saveTempBytes(Directory dir, String rawFileName, List<int> fileBytes) async {
+    final safeName = rawFileName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    final outFile = File('${dir.path}${Platform.pathSeparator}$safeName');
+    await outFile.writeAsBytes(fileBytes);
+    return outFile.path;
+  }
+
   Future<void> _pickAndAnalyzeZip() async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
@@ -713,29 +720,22 @@ if __name__ == "__main__":
 
     try {
       final tempRoot = await getTemporaryDirectory();
-      final sessionUnpackDir = Directory('${tempRoot.path}\\cam_session_${DateTime.now().millisecondsSinceEpoch}');
+      final sessionUnpackDir = Directory('${tempRoot.path}${Platform.pathSeparator}cam_session_${DateTime.now().millisecondsSinceEpoch}');
       sessionUnpackDir.createSync(recursive: true);
 
-      final List<({String name, List<int> bytes, String savedPath})> projectFiles = [];
+      final List> projectFiles = [];
       bool hasUnpackedNestedArchive = false;
-
-      Future<void> registerFileBytes(String rawFileName, List<int> fileBytes) async {
-        final safeName = rawFileName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
-        final outFile = File('${sessionUnpackDir.path}\\$safeName');
-        await outFile.writeAsBytes(fileBytes);
-        projectFiles.add((name: rawFileName, bytes: fileBytes, savedPath: outFile.path));
-      }
 
       if (selectedFile.path.toLowerCase().endsWith('.rar')) {
         final ok = await _extractExternalArchiveToDir(selectedFile.path, sessionUnpackDir);
         if (ok && sessionUnpackDir.existsSync()) {
           for (final entity in sessionUnpackDir.listSync(recursive: true)) {
             if (entity is File) {
-              projectFiles.add((
-                name: entity.path.split(Platform.pathSeparator).last,
-                bytes: await entity.readAsBytes(),
-                savedPath: entity.path,
-              ));
+              projectFiles.add({
+                'name': entity.path.split(Platform.pathSeparator).last,
+                'bytes': await entity.readAsBytes(),
+                'savedPath': entity.path,
+              });
             }
           }
         } else {
@@ -760,33 +760,37 @@ if __name__ == "__main__":
                 if (!inner.isFile) continue;
                 final innerName = inner.name.split('/').last.split('\\').last;
                 if (innerName.isNotEmpty) {
-                  await registerFileBytes(innerName, inner.content as List<int>);
+                  final iBytes = inner.content as List<int>;
+                  final p = await _saveTempBytes(sessionUnpackDir, innerName, iBytes);
+                  projectFiles.add({'name': innerName, 'bytes': iBytes, 'savedPath': p});
                 }
               }
             } catch (_) {
-              await registerFileBytes(rawName, fileBytes);
+              final p = await _saveTempBytes(sessionUnpackDir, rawName, fileBytes);
+              projectFiles.add({'name': rawName, 'bytes': fileBytes, 'savedPath': p});
             }
           } else if (low.endsWith('.rar') || low.endsWith('.7z')) {
-            final tempRar = File('${sessionUnpackDir.path}\\nested_$rawName');
-            await tempRar.writeAsBytes(fileBytes);
-            final nestedOutDir = Directory('${sessionUnpackDir.path}\\unpacked_${DateTime.now().millisecondsSinceEpoch}');
-            final ok = await _extractExternalArchiveToDir(tempRar.path, nestedOutDir);
+            final tempRarPath = await _saveTempBytes(sessionUnpackDir, 'nested_$rawName', fileBytes);
+            final nestedOutDir = Directory('${sessionUnpackDir.path}${Platform.pathSeparator}unpacked_${DateTime.now().millisecondsSinceEpoch}');
+            final ok = await _extractExternalArchiveToDir(tempRarPath, nestedOutDir);
             if (ok && nestedOutDir.existsSync()) {
               for (final entity in nestedOutDir.listSync(recursive: true)) {
                 if (entity is File) {
-                  projectFiles.add((
-                    name: entity.path.split(Platform.pathSeparator).last,
-                    bytes: await entity.readAsBytes(),
-                    savedPath: entity.path,
-                  ));
+                  projectFiles.add({
+                    'name': entity.path.split(Platform.pathSeparator).last,
+                    'bytes': await entity.readAsBytes(),
+                    'savedPath': entity.path,
+                  });
                 }
               }
             } else {
               hasUnpackedNestedArchive = true;
-              await registerFileBytes(rawName, fileBytes);
+              final p = await _saveTempBytes(sessionUnpackDir, rawName, fileBytes);
+              projectFiles.add({'name': rawName, 'bytes': fileBytes, 'savedPath': p});
             }
           } else {
-            await registerFileBytes(rawName, fileBytes);
+            final p = await _saveTempBytes(sessionUnpackDir, rawName, fileBytes);
+            projectFiles.add({'name': rawName, 'bytes': fileBytes, 'savedPath': p});
           }
         }
       }
@@ -812,7 +816,9 @@ if __name__ == "__main__":
       final Map<double, int> drillBreakdown = {};
 
       for (final pf in projectFiles) {
-        final rawName = pf.name;
+        final rawName = pf['name'] as String;
+        final fileBytes = pf['bytes'] as List<int>;
+        final savedPath = pf['savedPath'] as String;
         final upper = rawName.toUpperCase();
         String role = 'Прочий файл проекта';
         bool importantDoc = false;
@@ -822,7 +828,7 @@ if __name__ == "__main__":
         } else if (upper.endsWith('.XLS') || upper.endsWith('.XLSX')) {
           role = 'Бланк заказа / спецификация (читается автоматически)';
           importantDoc = true;
-          foundExcelPath ??= pf.savedPath;
+          foundExcelPath ??= savedPath;
         } else if (upper.endsWith('.PNG') || upper.endsWith('.JPG') || upper.endsWith('.JPEG') || upper.endsWith('.PDF')) {
           role = 'Чертёж / стек слоёв / ламели (кликните для просмотра)';
           importantDoc = true;
@@ -901,33 +907,38 @@ if __name__ == "__main__":
         layers.add(GerberLayerInfo(
           fileName: rawName,
           role: role,
-          sizeBytes: pf.bytes.length,
-          extractedPath: pf.savedPath,
+          sizeBytes: fileBytes.length,
+          extractedPath: savedPath,
           isImportantDoc: importantDoc,
         ));
 
-        final isLikelyBinary = pf.bytes.take(200).where((b) => b == 0).length > 5;
+        final isLikelyBinary = fileBytes.take(200).where((b) => b == 0).length > 5;
         if (!isLikelyBinary) {
-          final textContent = utf8.decode(pf.bytes, allowMalformed: true);
+          final textContent = utf8.decode(fileBytes, allowMalformed: true);
           if (role.contains('Сверловка')) {
             final drillStats = _parseExcellonDrill(textContent);
-            totalHoles += drillStats.totalHoles;
-            for (final entry in drillStats.tools.entries) {
+            totalHoles += drillStats['totalHoles'] as int;
+            final tools = drillStats['tools'] as Map<double, int>;
+            for (final entry in tools.entries) {
               drillBreakdown[entry.key] = (drillBreakdown[entry.key] ?? 0) + entry.value;
               if (minDrillMm == null || entry.key < minDrillMm) minDrillMm = entry.key;
             }
           } else if (role.contains('меди') || role.contains('Контур') || upper.endsWith('.GBR') || upper.endsWith('.PHO')) {
             final gerberStats = _parseGerberGeometry(textContent);
-            if (gerberStats.minTrackMm != null && (minTrackMm == null || gerberStats.minTrackMm! < minTrackMm)) {
-              minTrackMm = gerberStats.minTrackMm;
+            final gTrack = gerberStats['minTrackMm'] as double?;
+            final gWidth = gerberStats['widthMm'] as double?;
+            final gHeight = gerberStats['heightMm'] as double?;
+
+            if (gTrack != null && (minTrackMm == null || gTrack < minTrackMm)) {
+              minTrackMm = gTrack;
             }
-            if (gerberStats.widthMm != null && gerberStats.heightMm != null) {
+            if (gWidth != null && gHeight != null) {
               if (role.contains('Контур')) {
-                detectedWidth = gerberStats.widthMm;
-                detectedHeight = gerberStats.heightMm;
+                detectedWidth = gWidth;
+                detectedHeight = gHeight;
               } else if (fallbackCopperWidth == null) {
-                fallbackCopperWidth = gerberStats.widthMm;
-                fallbackCopperHeight = gerberStats.heightMm;
+                fallbackCopperWidth = gWidth;
+                fallbackCopperHeight = gHeight;
               }
             }
           }
@@ -1086,7 +1097,7 @@ if __name__ == "__main__":
     }
   }
 
-  ({int totalHoles, Map<double, int> tools}) _parseExcellonDrill(String text) {
+  Map<String, dynamic> _parseExcellonDrill(String text) {
     final lines = text.split(RegExp(r'\r?\n'));
     final Map<String, double> toolDiameters = {};
     final Map<double, int> toolCounts = {};
@@ -1121,10 +1132,10 @@ if __name__ == "__main__":
         total++;
       }
     }
-    return (totalHoles: total, tools: toolCounts);
+    return {'totalHoles': total, 'tools': toolCounts};
   }
 
-  ({double? widthMm, double? heightMm, double? minTrackMm}) _parseGerberGeometry(String text) {
+  Map<String, double?> _parseGerberGeometry(String text) {
     final lines = text.split(RegExp(r'\r?\n'));
     bool isInch = false;
     int decDigits = 4;
@@ -1178,7 +1189,7 @@ if __name__ == "__main__":
         height = dy;
       }
     }
-    return (widthMm: width, heightMm: height, minTrackMm: minAperture);
+    return {'widthMm': width, 'heightMm': height, 'minTrackMm': minAperture};
   }
 
   List<DfmCheckItem> _evaluateElectroconnectDfm() {
