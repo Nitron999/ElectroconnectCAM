@@ -205,10 +205,6 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     );
   }
 
-  /// Расчёт по официальному прайс-листу ООО «ЭЛЕКТРОконнект» от 25.09.2026:
-  /// - Базовые ставки за дм² (плата + маска 2 ст. 49р + марк. 1 ст. 20р)
-  /// - Подготовка: 300р/слой (медь + маска) + 600р маркировка (при повторе = 0)
-  /// - При сочетании нескольких коэффициентов сложности берётся ОДИН наибольший!
   ({double dm2Rate, double setupFee}) _computeRatesForSpecs({
     required int layers,
     required String material,
@@ -262,22 +258,21 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     if (material == 'Алюминий') {
       baseBoardDm2 = 465.0;
     } else if (material == 'FR4 Tg170') {
-      baseBoardDm2 += 27.0 * layers; // +27 р/дм² за слой HTg
+      baseBoardDm2 += 27.0 * layers;
     } else if (material == 'Rogers') {
       baseBoardDm2 *= 2.50;
     }
 
-    // Фиксированные доплаты за дм² по прайсу 2026
     double dm2Addons = 0.0;
     if (maskSide == 'С двух сторон') {
       dm2Addons += 49.0;
-    } else if (maskSide == 'С одной стороны') {
+    } else if (maskSide.startsWith('С одной стороны')) {
       dm2Addons += 25.0;
     }
 
     if (silkSide == 'С двух сторон') {
       dm2Addons += 40.0;
-    } else if (silkSide == 'С одной стороны') {
+    } else if (silkSide.startsWith('С одной стороны')) {
       dm2Addons += 20.0;
     }
 
@@ -306,34 +301,31 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       dm2Addons += 49.0;
     }
 
-    // Коэффициенты прайса 2026 (берётся один наибольший коэффициент!)
     double maxCoeff = 1.0;
     if (maskColor != 'Зеленая' && maskSide != 'Без маски') {
-      maxCoeff = math.max(maxCoeff, 2.0); // Белая/черная/синяя/красная LPI маска = 2.0
+      maxCoeff = math.max(maxCoeff, 2.0);
     }
     if (hasEpoxyFill) {
-      maxCoeff = math.max(maxCoeff, 1.5); // Заполнение эпоксидным компаундом = 1.5
+      maxCoeff = math.max(maxCoeff, 1.5);
     }
     if (hasBlindVias) {
-      maxCoeff = math.max(maxCoeff, 1.4); // Слепые переходные = 1.4
+      maxCoeff = math.max(maxCoeff, 1.4);
     }
     if ((minTrackMm > 0 && minTrackMm < 0.125) || (minDrillMm > 0 && minDrillMm < 0.30)) {
-      maxCoeff = math.max(maxCoeff, 1.25); // Повышенная сложность = 1.25
+      maxCoeff = math.max(maxCoeff, 1.25);
     }
     if (hasImpedanceOrPair) {
-      maxCoeff = math.max(maxCoeff, 1.2); // Импеданс / попарное прессование = 1.2
+      maxCoeff = math.max(maxCoeff, 1.2);
     }
     if (widthMm > 0 && heightMm > 0 && ((widthMm * heightMm) / 10000.0) > 5.0) {
-      maxCoeff = math.max(maxCoeff, 1.2); // Плата более 5 кв.дм = 1.2
+      maxCoeff = math.max(maxCoeff, 1.2);
     }
 
     double dm2Rate = (baseBoardDm2 + dm2Addons) * maxCoeff;
 
-    // Подготовка к производству по прайсу 2026:
-    // 300р за каждый слой меди + 300р за каждую сторону маски + 600р маркировка
     double setupFee = 0.0;
     if (orderType != 'Повтор') {
-      int maskLayers = maskSide == 'С двух сторон' ? 2 : (maskSide == 'С одной стороны' ? 1 : 0);
+      int maskLayers = maskSide == 'С двух сторон' ? 2 : (maskSide.startsWith('С одной стороны') ? 1 : 0);
       setupFee = (layers + maskLayers) * 300.0;
       if (silkSide != 'Без маркировки') {
         setupFee += 600.0;
@@ -345,11 +337,10 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
           (minDrillMm > 0 && minDrillMm < 0.30) ||
           hasImpedanceOrPair ||
           hasEpoxyFill) {
-        setupFee *= 1.50; // +50% к подготовке по прайсу 2026
+        setupFee *= 1.50;
       }
     }
 
-    // Срочность (по таблице стр. 1 прайса: Ускоренный +50%, Суперэкспресс +100%)
     if (urgency == 'Экспресс') {
       dm2Rate *= 1.50;
     } else if (urgency == 'СуперЭкспресс') {
@@ -429,6 +420,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     current['mask_side'] = _maskSide;
     current['mask_color'] = _maskColor;
     current['silk_side'] = _silkSide;
+    current['silk_color'] = _silkColor;
     current['contour'] = _contour;
     current['electro_test'] = _electroTest;
     current['customer'] = _customerController.text.trim();
@@ -481,6 +473,16 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     if (u.contains('супер')) return 'СуперЭкспресс';
     if (u.contains('экспресс') || u.contains('ускорен') || u.contains('срочн')) return 'Экспресс';
     return 'Серийный';
+  }
+
+  String _parseColorFromText(String raw, String fallback) {
+    final low = raw.toLowerCase();
+    if (low.contains('син')) return 'Синяя';
+    if (low.contains('черн') || low.contains('чёрн')) return 'Черная';
+    if (low.contains('бел')) return 'Белая';
+    if (low.contains('красн')) return 'Красная';
+    if (low.contains('зелен') || low.contains('зелён')) return 'Зеленая';
+    return fallback;
   }
 
   void _applyBoardFromBlank(Map board, String baseTitle) {
@@ -540,38 +542,40 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       if (validFoil.contains(fStr)) _foil = fStr;
     }
     if (board['mask_side'] != null) {
-      final ms = board['mask_side'].toString().toLowerCase();
+      final rawMs = board['mask_side'].toString();
+      final ms = rawMs.toLowerCase();
       if (ms.contains('двух') || ms.contains('2')) {
         _maskSide = 'С двух сторон';
-      } else if (ms.contains('одной') || ms.contains('верх') || ms.contains('низ') || ms.contains('1')) {
-        _maskSide = 'С одной стороны';
+      } else if (ms.contains('низ') || ms.contains('bot')) {
+        _maskSide = 'С одной стороны (низ)';
+      } else if (ms.contains('одной') || ms.contains('верх') || ms.contains('top') || ms.contains('1')) {
+        _maskSide = 'С одной стороны (верх)';
       } else if (ms.contains('без') || ms.contains('нет')) {
         _maskSide = 'Без маски';
       }
+      // Извлекаем цвет маски прямо из этой же ячейки, если указан ("Белая маска Только верх")
+      _maskColor = _parseColorFromText(rawMs, _maskColor);
     }
     if (board['mask_color'] != null) {
-      final mc = board['mask_color'].toString().toLowerCase();
-      if (mc.contains('син')) {
-        _maskColor = 'Синяя';
-      } else if (mc.contains('черн') || mc.contains('чёрн')) {
-        _maskColor = 'Черная';
-      } else if (mc.contains('бел')) {
-        _maskColor = 'Белая';
-      } else if (mc.contains('красн')) {
-        _maskColor = 'Красная';
-      } else {
-        _maskColor = 'Зеленая';
-      }
+      _maskColor = _parseColorFromText(board['mask_color'].toString(), _maskColor);
     }
     if (board['silk_side'] != null) {
-      final ss = board['silk_side'].toString().toLowerCase();
+      final rawSs = board['silk_side'].toString();
+      final ss = rawSs.toLowerCase();
       if (ss.contains('двух') || ss.contains('2')) {
         _silkSide = 'С двух сторон';
-      } else if (ss.contains('одной') || ss.contains('верх') || ss.contains('низ') || ss.contains('1')) {
-        _silkSide = 'С одной стороны';
+      } else if (ss.contains('низ') || ss.contains('bot')) {
+        _silkSide = 'С одной стороны (низ)';
+      } else if (ss.contains('одной') || ss.contains('верх') || ss.contains('top') || ss.contains('1')) {
+        _silkSide = 'С одной стороны (верх)';
       } else if (ss.contains('без') || ss.contains('нет')) {
         _silkSide = 'Без маркировки';
       }
+      // Извлекаем цвет маркировки прямо из этой же ячейки ("Черная Только верх")
+      _silkColor = _parseColorFromText(rawSs, _silkColor);
+    }
+    if (board['silk_color'] != null) {
+      _silkColor = _parseColorFromText(board['silk_color'].toString(), _silkColor);
     }
     if (board['finish'] != null) {
       final fin = board['finish'].toString().toLowerCase();
@@ -782,7 +786,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       r'                elif "олов" in spec.lower(): b["finish"] = "Иммерсионное олово"',
       r'                elif "пос" in spec.lower() or "hal" in spec.lower(): b["finish"] = "HAL (ПОС-63)"',
       r'                b["electro_test"] = ("эл. тест" in spec.lower())',
-      r'                if "маркировка: с одной" in spec.lower(): b["silk_side"] = "С одной стороны"',
+      r'                if "маркировка: с одной" in spec.lower(): b["silk_side"] = "С одной стороны (верх)"',
       r'                elif "маркировка: без" in spec.lower(): b["silk_side"] = "Без маркировки"',
       r'            boards.append(b)',
       r'    return boards if boards else None',
@@ -815,6 +819,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       r'        if "зенков" in rj: global_notes.append("Требуется зенковка отверстий")',
       r'        if "импеданс" in rj: global_notes.append("Контроль волнового сопротивления (импеданс)")',
       r'        if "реперн" in rj: global_notes.append("Нанести реперные знаки на полях заготовки")',
+      r'        if "отк" in [x.strip().lower() for x in ne]: global_notes.append("Приёмка: ОТК")',
       r'        if "фаска" in rj:',
       r'            for x in ne:',
       r'                if "фаска" in x.lower(): global_notes.append(x)',
@@ -1510,10 +1515,10 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
 
         _maskSide = (hasTopMask && hasBottomMask)
             ? 'С двух сторон'
-            : ((hasTopMask || hasBottomMask) ? 'С одной стороны' : 'Без маски');
+            : (hasTopMask ? 'С одной стороны (верх)' : (hasBottomMask ? 'С одной стороны (низ)' : 'Без маски'));
         _silkSide = (hasTopSilk && hasBottomSilk)
             ? 'С двух сторон'
-            : ((hasTopSilk || hasBottomSilk) ? 'С одной стороны' : 'Без маркировки');
+            : (hasTopSilk ? 'С одной стороны (верх)' : (hasBottomSilk ? 'С одной стороны (низ)' : 'Без маркировки'));
 
         if (firstBoard != null) {
           _applyBoardFromBlank(firstBoard, projectTitle);
@@ -1525,7 +1530,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       if (parsedBoards.length > 1) {
         _showSnack('В архиве найдено ${parsedBoards.length} плат! Переключайтесь сверху или жмите «Сформировать КП».');
       } else if (firstBoard != null) {
-        _showSnack('Параметры загружены из документа!');
+        _showSnack('Параметры (включая сторону и цвет маски/маркировки) загружены!');
       } else if (hasUnpackedNestedArchive) {
         _showSnack('Не удалось распаковать вложенный .RAR — укажите X и Y вручную.');
       } else if (detectedWidth == null) {
@@ -1854,9 +1859,10 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         final oType = b['order_type']?.toString() ?? 'Новый';
         final urg = _normalizeUrgency(b['urgency']?.toString());
         final fin = b['finish']?.toString() ?? 'HAL (ПОС-63)';
-        final maskSide = b['mask_side']?.toString() ?? 'С двух сторон';
-        final maskColor = b['mask_color']?.toString() ?? 'Зеленая';
-        final silkSide = b['silk_side']?.toString() ?? 'С двух сторон';
+        final rawMs = b['mask_side']?.toString() ?? 'С двух сторон';
+        final maskColor = _parseColorFromText(rawMs, b['mask_color']?.toString() ?? 'Зеленая');
+        final rawSs = b['silk_side']?.toString() ?? 'С двух сторон';
+        final silkColor = _parseColorFromText(rawSs, b['silk_color']?.toString() ?? 'Белая');
         final contour = b['contour']?.toString() ?? 'фрезеровка';
         final eTest = b['electro_test'] != false;
         final notesStr = (b['notes'] is List) ? (b['notes'] as List).join('; ') : '';
@@ -1870,8 +1876,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
           foil: foil,
           finish: fin,
           maskColor: maskColor,
-          maskSide: maskSide,
-          silkSide: silkSide,
+          maskSide: rawMs,
+          silkSide: rawSs,
           orderType: oType,
           urgency: urg,
           widthMm: effW,
@@ -1886,10 +1892,6 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         final vatSum = pureSum * 0.22;
         final totalWithVat = pureSum + vatSum;
 
-        // Официальные сроки завода по прайсу от 25.09.2026:
-        // Стандарт: 14 раб. дн. (1-2 сл) / 20 раб. дн. (МПП)
-        // Ускоренный: 7 раб. дн. (1-2 сл) / 12 раб. дн. (МПП)
-        // Суперэкспресс: 3 раб. дн. (1-2 сл) / 6 раб. дн. (МПП)
         final int leadDays;
         if (urg == 'СуперЭкспресс') {
           leadDays = layers >= 4 ? 6 : 3;
@@ -1900,7 +1902,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         }
 
         final spec = '$oType; $layers сл; ${effW.toStringAsFixed(0)}х${effH.toStringAsFixed(0)} мм; $contour; '
-            '$mat-${thick} мм-${foil} мкм; маска: $maskSide $maskColor; маркировка: $silkSide Белая; '
+            '$mat-${thick} мм-${foil} мкм; маска: $rawMs $maskColor; маркировка: $rawSs $silkColor; '
             '$fin; ${eTest ? "Эл. тест." : "Без эл. теста."}';
 
         itemsToRender.add({
@@ -2341,21 +2343,10 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         fin = 'Без покрытия';
       }
 
-      String maskSide = 'С двух сторон';
-      final rawMask = (b['mask_side']?.toString() ?? '').toLowerCase();
-      if (rawMask.contains('одной') || rawMask.contains('верх') || rawMask.contains('низ')) {
-        maskSide = 'С одной стороны';
-      } else if (rawMask.contains('без') || rawMask.contains('нет')) {
-        maskSide = 'Без маски';
-      }
-
-      String silkSide = 'С двух сторон';
-      final rawSilk = (b['silk_side']?.toString() ?? '').toLowerCase();
-      if (rawSilk.contains('одной') || rawSilk.contains('верх') || rawSilk.contains('низ')) {
-        silkSide = 'С одной стороны';
-      } else if (rawSilk.contains('без') || rawSilk.contains('нет')) {
-        silkSide = 'Без маркировки';
-      }
+      final rawMs = b['mask_side']?.toString() ?? 'С двух сторон';
+      final maskCol = _parseColorFromText(rawMs, b['mask_color']?.toString() ?? 'Зеленая');
+      final rawSs = b['silk_side']?.toString() ?? 'С двух сторон';
+      final silkCol = _parseColorFromText(rawSs, b['silk_color']?.toString() ?? 'Белая');
 
       final notesStr = (b['notes'] is List) ? (b['notes'] as List).join('; ') : '';
 
@@ -2364,9 +2355,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         material: mat,
         foil: foil,
         finish: fin,
-        maskColor: 'Зеленая',
-        maskSide: maskSide,
-        silkSide: silkSide,
+        maskColor: maskCol,
+        maskSide: rawMs,
+        silkSide: rawSs,
         orderType: oType,
         urgency: urg,
         widthMm: w,
@@ -2383,7 +2374,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       grandTotalAreaDm2 += totalDm2;
 
       sb.writeln('--- ПОЗИЦИЯ ${i + 1}: $bName ---');
-      sb.writeln('• Параметры: $oType ($urg); $layers сл; ${w.toStringAsFixed(1)}x${h.toStringAsFixed(1)}мм; $mat-$thickмм-$foilмкм; маска: $maskSide; марк: $silkSide; $fin');
+      sb.writeln('• Параметры: $oType ($urg); $layers сл; ${w.toStringAsFixed(1)}x${h.toStringAsFixed(1)}мм; $mat-$thickмм-$foilмкм; маска: $rawMs $maskCol; марк: $rawSs $silkCol; $fin');
       sb.writeln('• Тираж:     $qty шт. (расч. площадь партии: ${totalDm2.toStringAsFixed(2)} дм²)');
       sb.writeln('• Стоимость: ${totalWithVat.toStringAsFixed(2)} руб. с НДС (тариф ${rates.dm2Rate.toStringAsFixed(0)} р/дм² + подготовка ${rates.setupFee.toStringAsFixed(0)} р)');
       if (notesStr.isNotEmpty) {
@@ -2818,7 +2809,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                   child: _dropdownField(
                                     label: 'Маска',
                                     value: _maskSide,
-                                    items: const ['С двух сторон', 'С одной стороны', 'Без маски'],
+                                    items: const ['С двух сторон', 'С одной стороны (верх)', 'С одной стороны (низ)', 'Без маски'],
                                     onChanged: (v) => setState(() {
                                       _maskSide = v.toString();
                                       _recalculateTariffFromSpecs();
@@ -2858,7 +2849,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                   child: _dropdownField(
                                     label: 'Маркировка',
                                     value: _silkSide,
-                                    items: const ['С двух сторон', 'С одной стороны', 'Без маркировки'],
+                                    items: const ['С двух сторон', 'С одной стороны (верх)', 'С одной стороны (низ)', 'Без маркировки'],
                                     onChanged: (v) => setState(() {
                                       _silkSide = v.toString();
                                       _recalculateTariffFromSpecs();
