@@ -95,6 +95,7 @@ class GerberAnalysisResult {
   final bool hasBinaryBrdOnly;
   final bool hasCadSourceOnly;
   final bool hasNestedArchive;
+  final bool parsedFromOrderBlank;
   final double? widthMm;
   final double? heightMm;
   final double? minTrackMm;
@@ -115,6 +116,7 @@ class GerberAnalysisResult {
     required this.hasBinaryBrdOnly,
     required this.hasCadSourceOnly,
     required this.hasNestedArchive,
+    required this.parsedFromOrderBlank,
     this.widthMm,
     this.heightMm,
     this.minTrackMm,
@@ -302,6 +304,151 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       return;
     }
     await OpenFilex.open(path);
+  }
+
+  /// Автоматический парсинг стандартного Excel-бланка заявки ЭЛЕКТРОконнект (.xls / .xlsx)
+  Future?> _parseElectroconnectExcelBlank(String excelPath) async {
+    if (!Platform.isWindows) return null;
+    try {
+      final tempDir = await getTemporaryDirectory();
+      final pyFile = File('${tempDir.path}\\parse_ec_blank.py');
+      final outJson = File('${tempDir.path}\\ec_blank_parsed.json');
+      if (outJson.existsSync()) outJson.deleteSync();
+
+      const pyCode = '''
+# -*- coding: utf-8 -*-
+import json
+import re
+import sys
+
+EXCEL_PATH = sys.argv[1]
+OUT_JSON = sys.argv[2]
+
+def read_rows_via_excel_com(path):
+    import win32com.client
+    excel = win32com.client.DispatchEx("Excel.Application")
+    excel.Visible = False
+    excel.DisplayAlerts = False
+    wb = excel.Workbooks.Open(path, ReadOnly=True)
+    ws = wb.Sheets(1)
+    rows = []
+    for r in range(1, 55):
+        row_vals = []
+        for c in range(1, 15):
+            v = ws.Cells(r, c).Value
+            row_vals.append("" if v is None else str(v).strip())
+        rows.append(row_vals)
+    wb.Close(False)
+    excel.Quit()
+    return rows
+
+def read_rows_via_openpyxl_or_xlrd(path):
+    if path.lower().endswith(".xlsx"):
+        import openpyxl
+        wb = openpyxl.load_workbook(path, data_only=True)
+        ws = wb.active
+        rows = []
+        for r in range(1, 55):
+            rows.append(["" if ws.cell(r, c).value is None else str(ws.cell(r, c).value).strip() for c in range(1, 15)])
+        return rows
+    else:
+        import xlrd
+        wb = xlrd.open_workbook(path)
+        sh = wb.sheet_by_index(0)
+        rows = []
+        for r in range(min(55, sh.nrows)):
+            rows.append([str(sh.cell_value(r, c)).strip() for c in range(min(15, sh.ncols))])
+        return rows
+
+def main():
+    rows = []
+    try:
+        rows = read_rows_via_openpyxl_or_xlrd(EXCEL_PATH)
+    except Exception:
+        try:
+            rows = read_rows_via_excel_com(EXCEL_PATH)
+        except Exception as e:
+            with open(OUT_JSON, "w", encoding="utf-8") as f:
+                json.dump({"ok": False, "error": str(e)}, f, ensure_ascii=False)
+            return
+
+    data = {"ok": True, "notes": []}
+    for row in rows:
+        non_empty = [x for x in row if x]
+        if len(non_empty) < 2:
+            continue
+        label = non_empty[0].lower()
+        val = non_empty[1]
+        # Если первая колонка - номер пункта, берём следующую пару
+        if re.fullmatch(r"\\d+\\.?", label) and len(non_empty) >= 3:
+            label = non_empty[1].lower()
+            val = non_empty[2]
+
+        if "заказчик" in label and "название" in label:
+            data["customer"] = val
+        elif "для кого" in label:
+            data["for_whom"] = val
+        elif "тип заказа" in label:
+            data["order_type"] = "Повтор" if "повтор" in val.lower() else "Новый"
+        elif "имя файла" in label:
+            data["board_name"] = val
+        elif "количество плат" in label:
+            m = re.search(r"(\\d+)", val)
+            if m:
+                data["qty"] = int(m.group(1))
+        elif "размеры платы" in label or "точные размеры" in label:
+            m = re.search(r"(\\d+(?:[.,]\\d+)?)\\s*[xхXХ*]\\s*(\\d+(?:[.,]\\d+)?)", val)
+            if m:
+                data["width"] = float(m.group(1).replace(",", "."))
+                data["height"] = float(m.group(2).replace(",", "."))
+        elif "количество слоев" in label or "количество слоёв" in label:
+            m = re.search(r"(\\d+)", val)
+            if m:
+                data["layers"] = int(m.group(1))
+        elif "толщина платы" in label:
+            m = re.search(r"(\\d+(?:[.,]\\d+)?)", val)
+            if m:
+                data["thickness"] = m.group(1).replace(",", ".")
+        elif "толщина фольги" in label:
+            m = re.search(r"(\\d+)", val)
+            if m:
+                data["foil"] = m.group(1)
+        elif "паяльная маска" in label:
+            data["mask_side"] = val
+        elif "маркировка" in label:
+            data["silk_side"] = val
+        elif label.startswith("покрытие") and "разъем" not in label and "разъём" not in label:
+            data["finish"] = val
+        elif "ножевых" in label:
+            if val and val.lower() not in ("нет", "-", "0"):
+                data["notes"].append(f"Покрытие ножевых разъёмов: {val}")
+        elif "вариант мпп" in label:
+            if val and val.lower() not in ("нет", "-"):
+                data["notes"].append(f"Вариант МПП: {val}")
+        elif "электроконтрол" in label:
+            data["electro_test"] = ("нет" not in val.lower())
+        elif "обработки контура" in label:
+            data["contour"] = val.lower()
+        elif "материал" in label and ("fr4" in val.lower() or "алюм" in val.lower() or "rogers" in val.lower()):
+            data["material"] = val
+
+    with open(OUT_JSON, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
+
+if __name__ == "__main__":
+    main()
+''';
+
+      await pyFile.writeAsString(pyCode, encoding: utf8);
+      await Process.run('python', [pyFile.path, excelPath, outJson.path], runInShell: true);
+
+      if (outJson.existsSync()) {
+        final raw = await outJson.readAsString(encoding: utf8);
+        final parsed = jsonDecode(raw) as Map<String, dynamic>;
+        if (parsed['ok'] == true) return parsed;
+      }
+    } catch (_) {}
+    return null;
   }
 
   Future<bool> _extractExternalArchiveToDir(String archivePath, Directory targetDir) async {
@@ -655,6 +802,7 @@ if __name__ == "__main__":
       bool hasBinaryBrd = false;
       bool hasCadSourceOnly = false;
       bool hasTextContour = false;
+      String? foundExcelPath;
 
       double? detectedWidth;
       double? detectedHeight;
@@ -673,9 +821,10 @@ if __name__ == "__main__":
 
         if (upper.endsWith('.RAR') || upper.endsWith('.7Z')) {
           role = 'Нераспакованный RAR (установите WinRAR/7-Zip)';
-        } else if (upper.endsWith('.XLS') || upper.endsWith('.XLSX') || upper.endsWith('.CSV')) {
-          role = 'Бланк заказа / спецификация (Excel)';
+        } else if (upper.endsWith('.XLS') || upper.endsWith('.XLSX')) {
+          role = 'Бланк заказа / спецификация (читается автоматически)';
           importantDoc = true;
+          foundExcelPath ??= pf.savedPath;
         } else if (upper.endsWith('.PNG') || upper.endsWith('.JPG') || upper.endsWith('.JPEG') || upper.endsWith('.PDF')) {
           role = 'Чертёж / стек слоёв / ламели (кликните для просмотра)';
           importantDoc = true;
@@ -790,7 +939,25 @@ if __name__ == "__main__":
       detectedWidth ??= fallbackCopperWidth;
       detectedHeight ??= fallbackCopperHeight;
 
-      final finalLayersCount = copperLayers > 0 ? copperLayers : 2;
+      // Если в архиве найден бланк заказа Excel (.xls / .xlsx), парсим его автоматически!
+      Map<String, dynamic>? blankData;
+      if (foundExcelPath != null) {
+        blankData = await _parseElectroconnectExcelBlank(foundExcelPath);
+      }
+
+      if (blankData != null) {
+        if (detectedWidth == null && blankData['width'] != null) {
+          detectedWidth = (blankData['width'] as num).toDouble();
+        }
+        if (detectedHeight == null && blankData['height'] != null) {
+          detectedHeight = (blankData['height'] as num).toDouble();
+        }
+      }
+
+      final int finalLayersCount = (blankData != null && blankData['layers'] != null)
+          ? (blankData['layers'] as num).toInt()
+          : (copperLayers > 0 ? copperLayers : 2);
+
       final projectTitle = archiveName.replaceAll(RegExp(r'\.(zip|rar)$', caseSensitive: false), '');
 
       final resultObj = GerberAnalysisResult(
@@ -806,6 +973,7 @@ if __name__ == "__main__":
         hasBinaryBrdOnly: hasBinaryBrd && !hasTextContour && detectedWidth == null,
         hasCadSourceOnly: hasCadSourceOnly && copperLayers == 0,
         hasNestedArchive: hasUnpackedNestedArchive,
+        parsedFromOrderBlank: blankData != null,
         widthMm: detectedWidth,
         heightMm: detectedHeight,
         minTrackMm: minTrackMm,
@@ -840,13 +1008,78 @@ if __name__ == "__main__":
             ? 'С двух сторон'
             : ((hasTopSilk || hasBottomSilk) ? 'С одной стороны' : 'Без маркировки');
 
+        // Подставляем остальные данные из Excel-бланка заявки, если он был в архиве
+        if (blankData != null) {
+          if (blankData['customer'] != null && blankData['customer'].toString().isNotEmpty) {
+            _customerController.text = blankData['customer'].toString();
+          }
+          if (blankData['order_type'] != null) {
+            _orderType = blankData['order_type'].toString();
+          }
+          if (blankData['qty'] != null) {
+            _qtyController.text = blankData['qty'].toString();
+          }
+          if (blankData['thickness'] != null) {
+            const validThick = ['0.5', '0.8', '1.0', '1.5', '2.0', '2.5', '3.0'];
+            final tStr = blankData['thickness'].toString();
+            if (validThick.contains(tStr)) _thickness = tStr;
+          }
+          if (blankData['foil'] != null) {
+            const validFoil = ['12', '18', '35', '50', '70', '105'];
+            final fStr = blankData['foil'].toString();
+            if (validFoil.contains(fStr)) _foil = fStr;
+          }
+          if (blankData['mask_side'] != null) {
+            final ms = blankData['mask_side'].toString().toLowerCase();
+            if (ms.contains('двух')) {
+              _maskSide = 'С двух сторон';
+            } else if (ms.contains('одной')) {
+              _maskSide = 'С одной стороны';
+            } else if (ms.contains('без')) {
+              _maskSide = 'Без маски';
+            }
+          }
+          if (blankData['silk_side'] != null) {
+            final ss = blankData['silk_side'].toString().toLowerCase();
+            if (ss.contains('двух')) {
+              _silkSide = 'С двух сторон';
+            } else if (ss.contains('одной')) {
+              _silkSide = 'С одной стороны';
+            } else if (ss.contains('без')) {
+              _silkSide = 'Без маркировки';
+            }
+          }
+          if (blankData['finish'] != null) {
+            final fin = blankData['finish'].toString().toLowerCase();
+            if (fin.contains('золот')) {
+              _finish = 'Иммерсионное золото';
+            } else if (fin.contains('олов')) {
+              _finish = 'Иммерсионное олово';
+            } else if (fin.contains('без')) {
+              _finish = 'Без покрытия';
+            } else {
+              _finish = 'HAL';
+            }
+          }
+          if (blankData['contour'] != null) {
+            final cnt = blankData['contour'].toString().toLowerCase();
+            if (cnt.contains('скрайб')) _contour = 'скрайбирование';
+          }
+          if (blankData['electro_test'] != null) {
+            _electroTest = blankData['electro_test'] == true;
+          }
+          if (blankData['notes'] is List && (blankData['notes'] as List).isNotEmpty) {
+            _notesController.text = (blankData['notes'] as List).join('; ');
+          }
+        }
+
         _recalculateTariffFromSpecs(force: true);
       });
 
-      if (hasUnpackedNestedArchive) {
-        _showSnack('Не удалось распаковать вложенный .RAR (не найден WinRAR/7-Zip) — укажите X и Y вручную.');
-      } else if (hasCadSourceOnly && detectedWidth == null) {
-        _showSnack('В архиве исходник .PCB без Gerber — кликните по .XLS или стеку справа, чтобы посмотреть размеры.');
+      if (blankData != null) {
+        _showSnack('Данные автоматически загружены из бланка заказа Excel (.XLS)!');
+      } else if (hasUnpackedNestedArchive) {
+        _showSnack('Не удалось распаковать вложенный .RAR — укажите X и Y вручную.');
       } else if (detectedWidth == null) {
         _showSnack('Архив загружен, но контур не распознан — введите X и Y вручную для расчёта цены.');
       } else {
@@ -1279,7 +1512,7 @@ $priceLine
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text('ЭЛЕКТРОконнект — CAM & DFM Контроль (Кувезенков А.А.)', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-                Text('Анализ Gerber / RAR / ZIP / PCB • Проверка норм завода • Расчет цены и ТЗ', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                Text('Автопарсинг бланков XLS, Gerber, RAR, ZIP, PCB • Расчет цены и ТЗ', style: TextStyle(fontSize: 11, color: Colors.grey)),
               ],
             ),
           ],
@@ -1318,7 +1551,7 @@ $priceLine
                             Text(
                               _analysis != null
                                   ? 'Найдено файлов: ${_analysis!.layers.length} • Отверстий: ${_analysis!.totalHoles} • Папка: ${_analysis!.archiveDir}'
-                                  : 'Поддерживаются P-CAD (.TOP, .BOT, .TMS, .BMS, .DRL, .BRD), исходники (.PCB) и стандартные Gerber',
+                                  : 'Автоматически читает бланки заказов Excel (.XLS/.XLSX), Gerber, P-CAD и вложенные .RAR',
                               style: TextStyle(fontSize: 12.5, color: _subtleText),
                             ),
                           ],
@@ -1646,6 +1879,20 @@ $priceLine
                                   ],
                                 ),
                                 const SizedBox(height: 12),
+                                if (_analysis?.parsedFromOrderBlank == true)
+                                  Container(
+                                    margin: const EdgeInsets.only(bottom: 10),
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF10B981).withOpacity(0.14),
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(color: const Color(0xFF10B981).withOpacity(0.45)),
+                                    ),
+                                    child: const Text(
+                                      'Параметры (заказчик, размеры X/Y, тираж, слои, толщина, покрытие и примечания) автоматически считаны из бланка заказа Excel!',
+                                      style: TextStyle(fontSize: 12),
+                                    ),
+                                  ),
                                 if (_analysis?.hasNestedArchive == true)
                                   Container(
                                     margin: const EdgeInsets.only(bottom: 10),
@@ -1660,7 +1907,7 @@ $priceLine
                                       style: TextStyle(fontSize: 12),
                                     ),
                                   ),
-                                if (_analysis?.hasCadSourceOnly == true)
+                                if (_analysis?.hasCadSourceOnly == true && _analysis?.parsedFromOrderBlank != true)
                                   Container(
                                     margin: const EdgeInsets.only(bottom: 10),
                                     padding: const EdgeInsets.all(10),
