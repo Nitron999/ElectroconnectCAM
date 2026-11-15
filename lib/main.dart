@@ -88,6 +88,8 @@ class GerberAnalysisResult {
   final String archiveDir;
   final String projectTitle;
   final List layers;
+  final List extraProjectDocs;
+  final List extraTextAlerts;
   final int detectedLayersCount;
   final bool hasTopMask;
   final bool hasBottomMask;
@@ -109,6 +111,8 @@ class GerberAnalysisResult {
     required this.archiveDir,
     required this.projectTitle,
     required this.layers,
+    required this.extraProjectDocs,
+    required this.extraTextAlerts,
     required this.detectedLayersCount,
     required this.hasTopMask,
     required this.hasBottomMask,
@@ -600,19 +604,28 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     if (board['electro_test'] != null) {
       _electroTest = board['electro_test'] == true;
     }
+
+    final List combinedNotes = [];
     if (board['notes'] is List) {
-      final rawNotes = (board['notes'] as List).map((e) => e.toString()).toList();
-      final filtered = rawNotes.where((n) {
+      for (final item in (board['notes'] as List)) {
+        final n = item.toString();
         if (_layersCount < 4) {
           final nl = n.toLowerCase();
           if (nl.contains('попарн') || nl.contains('вариант мпп') || nl.contains('между слоями') || nl.contains('прессован')) {
-            return false;
+            continue;
           }
         }
-        return true;
-      }).toList();
-      _notesController.text = filtered.join('; ');
+        combinedNotes.add(n);
+      }
     }
+    if (_analysis != null && _analysis!.extraTextAlerts.isNotEmpty) {
+      for (final alert in _analysis!.extraTextAlerts) {
+        if (!combinedNotes.contains(alert.toString())) {
+          combinedNotes.add(alert.toString());
+        }
+      }
+    }
+    _notesController.text = combinedNotes.join('; ');
 
     _manualPriceOverride = false;
     _webPriceResult = null;
@@ -646,6 +659,21 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       r'        __import__(pkg)',
       r'    except ImportError:',
       r'        subprocess.run([sys.executable, "-m", "pip", "install", "-q", pkg], check=False)',
+      r'def is_reddish_rgb(rgb_str):',
+      r'    if not rgb_str: return False',
+      r'    s = str(rgb_str).strip().upper()',
+      r'    if len(s) == 8: s = s[2:]',
+      r'    if len(s) != 6 or not re.fullmatch(r"[0-9A-F]{6}", s): return False',
+      r'    r, g, b = int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)',
+      r'    return r >= 150 and g <= 95 and b <= 95 and (r - max(g, b)) >= 80',
+      r'def is_highlight_fill(rgb_str):',
+      r'    if not rgb_str: return False',
+      r'    s = str(rgb_str).strip().upper()',
+      r'    if len(s) == 8: s = s[2:]',
+      r'    if len(s) != 6 or not re.fullmatch(r"[0-9A-F]{6}", s): return False',
+      r'    if s in ("FFFFFF", "000000", "D9D9D9", "F2F2F2", "E7E6E6", "EDEDED"): return False',
+      r'    r, g, b = int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)',
+      r'    return (r >= 200 and g >= 180 and b <= 130) or is_reddish_rgb(s)',
       r'def parse_pdf_tkp(path):',
       r'    ensure_pkg("pypdf")',
       r'    import pypdf',
@@ -701,18 +729,28 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       r'        import openpyxl',
       r'        wb = openpyxl.load_workbook(path, data_only=True)',
       r'        ws = wb.active',
-      r'        for r in range(1, min(80, ws.max_row + 1)):',
+      r'        for r in range(1, min(90, ws.max_row + 1)):',
       r'            r_vals = []',
       r'            for c in range(1, min(60, ws.max_column + 1)):',
       r'                cell = ws.cell(r, c)',
       r'                val = "" if cell.value is None else str(cell.value).strip()',
       r'                r_vals.append(val)',
-      r'                if val and len(val) > 3:',
+      r'                if val and len(val) > 2:',
       r'                    try:',
-      r'                        col = cell.font.color if cell.font else None',
-      r'                        rgb = str(col.rgb).upper() if col and col.rgb else ""',
-      r'                        if rgb.endswith("FF0000") or rgb.endswith("C00000") or rgb.endswith("ED1C24"):',
-      r'                            red_notes.append("[КРАСНЫМ В EXCEL]: " + val)',
+      r'                        fnt = cell.font',
+      r'                        is_b = bool(fnt and fnt.bold)',
+      r'                        col = fnt.color if fnt else None',
+      r'                        rgb = str(col.rgb) if col and col.rgb else ""',
+      r'                        th = col.theme if col and col.theme is not None else -1',
+      r'                        fill_rgb = str(cell.fill.start_color.rgb) if cell.fill and cell.fill.fill_type and cell.fill.start_color else ""',
+      r'                        if is_reddish_rgb(rgb) or th in (5, 9):',
+      r'                            tag = "[ЖИРНЫМ КРАСНЫМ В EXCEL]: " if is_b else "[КРАСНЫМ В EXCEL]: "',
+      r'                            red_notes.append(tag + val)',
+      r'                        elif is_highlight_fill(fill_rgb):',
+      r'                            red_notes.append("[ВЫДЕЛЕНО ЦВЕТОМ В EXCEL]: " + val)',
+      r'                        elif is_b and r >= 12 and c >= 6 and len(val) >= 5 and not re.fullmatch(r"[\d.,\s]+", val):',
+      r'                            if val.lower() not in ("новый", "повтор", "серийный", "фрезеровка", "с двух сторон", "да", "нет", "любой", "отсутствует", "открыты", "под маской"):',
+      r'                                red_notes.append("[ЖИРНЫМ В EXCEL]: " + val)',
       r'                    except Exception:',
       r'                        pass',
       r'            rows_text.append(r_vals)',
@@ -726,18 +764,28 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       r'        wb = xlrd.open_workbook(path)',
       r'        has_fmt = False',
       r'    sh = wb.sheet_by_index(0)',
-      r'    for r in range(min(80, sh.nrows)):',
+      r'    for r in range(min(90, sh.nrows)):',
       r'        r_vals = []',
       r'        for c in range(min(60, sh.ncols)):',
       r'            val = str(sh.cell_value(r, c)).strip()',
       r'            r_vals.append(val)',
-      r'            if has_fmt and val and len(val) > 3:',
+      r'            if has_fmt and val and len(val) > 2:',
       r'                try:',
       r'                    xf = wb.xf_list[sh.cell_xf_index(r, c)]',
       r'                    font = wb.font_list[xf.font_index]',
+      r'                    is_b = bool(getattr(font, "bold", 0) or getattr(font, "weight", 400) >= 600)',
       r'                    rgb = wb.colour_map.get(font.colour_index)',
-      r'                    if rgb and rgb[0] >= 180 and rgb[1] <= 70 and rgb[2] <= 70:',
-      r'                        red_notes.append("[КРАСНЫМ В EXCEL]: " + val)',
+      r'                    bg_rgb = wb.colour_map.get(xf.background.pattern_colour_index) if hasattr(xf, "background") else None',
+      r'                    is_red = bool(rgb and rgb[0] >= 150 and rgb[1] <= 95 and rgb[2] <= 95 and (rgb[0] - max(rgb[1], rgb[2])) >= 80)',
+      r'                    is_bg_warn = bool(bg_rgb and ((bg_rgb[0] >= 200 and bg_rgb[1] >= 180 and bg_rgb[2] <= 130) or (bg_rgb[0] >= 180 and bg_rgb[1] <= 90 and bg_rgb[2] <= 90)))',
+      r'                    if is_red:',
+      r'                        tag = "[ЖИРНЫМ КРАСНЫМ В EXCEL]: " if is_b else "[КРАСНЫМ В EXCEL]: "',
+      r'                        red_notes.append(tag + val)',
+      r'                    elif is_bg_warn:',
+      r'                        red_notes.append("[ВЫДЕЛЕНО ЦВЕТОМ В EXCEL]: " + val)',
+      r'                    elif is_b and r >= 11 and c >= 4 and len(val) >= 5 and not re.fullmatch(r"[\d.,\s]+", val):',
+      r'                        if val.lower() not in ("новый", "повтор", "серийный", "фрезеровка", "с двух сторон", "да", "нет", "любой", "отсутствует", "открыты", "под маской"):',
+      r'                            red_notes.append("[ЖИРНЫМ В EXCEL]: " + val)',
       r'                except Exception:',
       r'                    pass',
       r'        rows_text.append(r_vals)',
@@ -915,7 +963,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       r'        seen = set()',
       r'        u = []',
       r'        for n in b["notes"]:',
-      r'            norm = n.replace("[КРАСНЫМ В EXCEL]: ", "").strip()',
+      r'            norm = re.sub(r"^\[.*?\]:\s*", "", n).strip()',
       r'            if norm not in seen:',
       r'                seen.add(norm)',
       r'                u.append(n)',
@@ -1284,6 +1332,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       }
 
       final List layers = [];
+      final List extraProjectDocs = [];
+      final List extraTextAlerts = [];
       int copperLayers = 0;
       bool hasTopMask = false;
       bool hasBottomMask = false;
@@ -1323,9 +1373,15 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
           role = 'Запрос ТКП / чертёж PDF (читается автоматически)';
           importantDoc = true;
           foundPdfPaths.add(savedPath);
-        } else if (upper.endsWith('.PNG') || upper.endsWith('.JPG') || upper.endsWith('.JPEG')) {
+          extraProjectDocs.add(rawName);
+        } else if (upper.endsWith('.PNG') || upper.endsWith('.JPG') || upper.endsWith('.JPEG') || upper.endsWith('.BMP')) {
           role = 'Чертёж / стек слоёв / ламели (кликните для просмотра)';
           importantDoc = true;
+          extraProjectDocs.add(rawName);
+        } else if (upper.endsWith('.DOC') || upper.endsWith('.DOCX') || upper.endsWith('.RTF')) {
+          role = 'Текстовое ТЗ / пояснение Word (откройте для проверки)';
+          importantDoc = true;
+          extraProjectDocs.add(rawName);
         } else if (upper.endsWith('.PCB') || upper.endsWith('.PCBDOC') || upper.endsWith('.LAY') || upper.endsWith('.LAY6')) {
           role = 'Исходник платы CAD (.PCB / .LAY)';
           hasCadSourceOnly = true;
@@ -1388,11 +1444,21 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
           role = 'Контур платы / фрезеровка';
           hasTextContour = true;
         } else if (upper.endsWith('.DRL') ||
-            upper.endsWith('.TXT') ||
             upper.endsWith('.EXC') ||
             upper.endsWith('.TAP') ||
-            upper.contains('DRILL')) {
+            upper.contains('DRILL') ||
+            upper.contains('HOLES') ||
+            upper.contains('NC_')) {
           role = 'Сверловка (Excellon)';
+        } else if (upper.endsWith('.TXT')) {
+          final sampleTxt = utf8.decode(fileBytes.take(400).toList(), allowMalformed: true).toUpperCase();
+          if (sampleTxt.contains('M48') || sampleTxt.contains('T01') || sampleTxt.contains('METRIC') || sampleTxt.contains('INCH')) {
+            role = 'Сверловка (Excellon)';
+          } else {
+            role = 'Текстовое примечание / ReadMe';
+            importantDoc = true;
+            extraProjectDocs.add(rawName);
+          }
         } else if (upper.endsWith('.BRD')) {
           role = 'Файл платы P-CAD / CAD (.BRD)';
           hasBinaryBrd = true;
@@ -1437,6 +1503,13 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                 fallbackCopperHeight = gHeight;
               }
             }
+          } else if (role.contains('ReadMe') && !upper.contains('PICK') && !upper.contains('PLACE') && !upper.contains('BOM')) {
+            for (final line in textContent.split(RegExp(r'\r?\n'))) {
+              final tr = line.trim();
+              if (tr.length >= 4 && tr.length <= 160) {
+                extraTextAlerts.add('[$rawName]: $tr');
+              }
+            }
           }
         }
       }
@@ -1473,6 +1546,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         archiveDir: archiveDir,
         projectTitle: projectTitle,
         layers: layers,
+        extraProjectDocs: extraProjectDocs,
+        extraTextAlerts: extraTextAlerts.take(6).toList(),
         detectedLayersCount: finalLayersCount,
         hasTopMask: hasTopMask,
         hasBottomMask: hasBottomMask,
@@ -1521,6 +1596,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         if (firstBoard != null) {
           _applyBoardFromBlank(firstBoard, projectTitle);
         } else {
+          if (extraTextAlerts.isNotEmpty) {
+            _notesController.text = extraTextAlerts.take(6).join('; ');
+          }
           _recalculateTariffFromSpecs(force: true);
         }
       });
@@ -1528,7 +1606,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       if (parsedBoards.length > 1) {
         _showSnack('В архиве найдено ${parsedBoards.length} плат! Переключайтесь сверху или жмите «Сформировать КП».');
       } else if (firstBoard != null) {
-        _showSnack('Параметры (включая сторону и цвет маски/маркировки) загружены!');
+        _showSnack('Параметры и выделенные пометки загружены из документа!');
       } else if (hasUnpackedNestedArchive) {
         _showSnack('Не удалось распаковать вложенный .RAR — укажите X и Y вручную.');
       } else if (detectedWidth == null) {
@@ -1643,7 +1721,35 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     final track = double.tryParse(_minTrackController.text.replaceAll(',', '.')) ?? 0;
     final drill = double.tryParse(_minHoleController.text.replaceAll(',', '.')) ?? 0;
     final thick = double.tryParse(_thickness) ?? 1.5;
-    final notesLow = _notesController.text.toLowerCase();
+    final notesText = _notesController.text;
+    final notesLow = notesText.toLowerCase();
+
+    // 1. Выделенные красным / жирным / цветом ячейки в бланке Excel
+    final highlightedParts = notesText
+        .split(';')
+        .map((e) => e.trim())
+        .where((e) =>
+            e.contains('[КРАСНЫМ') ||
+            e.contains('[ЖИРНЫМ') ||
+            e.contains('[ВЫДЕЛЕНО'))
+        .toList();
+
+    if (highlightedParts.isNotEmpty) {
+      checks.add(DfmCheckItem(
+        title: 'ВНИМАНИЕ! Выделенные (красным / жирным) требования в заявке (${highlightedParts.length}):',
+        detail: highlightedParts.join('\n'),
+        level: 'error',
+      ));
+    }
+
+    // 2. Дополнительные документы в архиве (чертежи стека, ламели, PDF, ReadMe)
+    if (_analysis != null && _analysis!.extraProjectDocs.isNotEmpty) {
+      checks.add(DfmCheckItem(
+        title: 'В архиве есть доп. документы/чертежи (${_analysis!.extraProjectDocs.length} шт.) — обязательно проверьте!',
+        detail: 'Файлы: ${_analysis!.extraProjectDocs.join(", ")} (кликните по ним в блоке 3 ниже, чтобы открыть).',
+        level: 'warn',
+      ));
+    }
 
     if (_hasCustomStackOrPressing(_notesController.text, _layersCount)) {
       final pairMatch = RegExp(r'(\d+[.,]\d+)\s*[xхXХ*]\s*2').firstMatch(notesLow);
@@ -1661,14 +1767,6 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       checks.add(DfmCheckItem(
         title: 'Спец. техпроцесс / стек МПП (повышенный коэф.)',
         detail: stackDetail,
-        level: 'warn',
-      ));
-    }
-
-    if (notesLow.contains('красным в excel')) {
-      checks.add(DfmCheckItem(
-        title: 'В бланке есть выделенные красным требования заказчика!',
-        detail: 'Проверьте поле «Примечание для ТЗ» внизу формы перед запуском в работу.',
         level: 'warn',
       ));
     }
