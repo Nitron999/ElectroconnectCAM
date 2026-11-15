@@ -24,7 +24,6 @@ class ElectroconnectCamApp extends StatefulWidget {
 }
 
 class _ElectroconnectCamAppState extends State<ElectroconnectCamApp> {
-  // По умолчанию светлая корпоративная тема в цветах сайта pselectro.ru (#002E63 и #F56600)
   bool _isDark = false;
 
   @override
@@ -159,7 +158,6 @@ class CamWorkspaceScreen extends StatefulWidget {
 }
 
 class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
-  // Фирменные цвета сайта pselectro.ru
   static const Color ecNavy = Color(0xFF002E63);
   static const Color ecNavyLight = Color(0xFF0D478A);
   static const Color ecOrange = Color(0xFFF56600);
@@ -168,7 +166,6 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   List _blankBoardsList = [];
   int _selectedBoardIdx = 0;
 
-  // Настраиваемые тарифы прайс-листа завода (сохраняются локально)
   Map<String, double> _tariffConfig = {
     'l1': 290.0,
     'l2': 370.0,
@@ -200,6 +197,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   final TextEditingController _widthController = TextEditingController(text: '0.0');
   final TextEditingController _heightController = TextEditingController(text: '0.0');
   final TextEditingController _qtyController = TextEditingController(text: '10');
+  final TextEditingController _extraQtysController = TextEditingController();
   final TextEditingController _minTrackController = TextEditingController(text: '0.15');
   final TextEditingController _minHoleController = TextEditingController(text: '0.30');
   final TextEditingController _notesController = TextEditingController();
@@ -592,10 +590,12 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     return (dm2Rate: dm2Rate, setupFee: setupFee);
   }
 
+  /// Как в КП завода (64x23 мм = 0.1472 -> 0.15 дм² на плату, минимум 0.03 дм²)
   double _calcEffectiveSingleDm2(double w, double h) {
     if (w <= 0 || h <= 0) return 0.0;
     final rawDm2 = (w * h) / 10000.0;
-    return math.max(rawDm2, 0.03);
+    final roundedUp = (rawDm2 * 100.0).ceil() / 100.0;
+    return math.max(roundedUp, 0.03);
   }
 
   bool _hasCustomStackOrPressing(String notesText, int layers) {
@@ -685,6 +685,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     _widthController.text = '0.0';
     _heightController.text = '0.0';
     _qtyController.text = '10';
+    _extraQtysController.clear();
     _minTrackController.text = '0.15';
     _minHoleController.text = '0.30';
     _notesController.clear();
@@ -2141,18 +2142,16 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   }
 
   String _buildSpecificationLine() {
-    final w = _widthController.text.trim();
-    final h = _heightController.text.trim();
+    final w = _widthController.text.trim().replaceAll('.0', '');
+    final h = _heightController.text.trim().replaceAll('.0', '');
     final maskPart = _maskSide == 'Без маски' ? 'Без маски' : '$_maskSide $_maskColor';
     final silkPart = _silkSide == 'Без маркировки' ? 'Без маркировки' : '$_silkSide $_silkColor';
     final testPart = _electroTest ? 'Эл. тест.' : 'Без эл. теста.';
-    final stackTag = _hasCustomStackOrPressing(_notesController.text, _layersCount)
-        ? ' [СПЕЦ. ТЕХПРОЦЕСС / СТЕК МПП]'
-        : '';
+    final finShort = _finish.startsWith('HAL') ? 'HAL' : _finish;
 
-    return '$_orderType ($_urgency); $_layersCount сл; ${w}х${h}мм; $_contour; '
+    return '$_orderType; $_layersCount сл; ${w}x${h}мм; $_contour; '
         '$_material-${_thickness}мм-${_foil}мкм; '
-        'маска: $maskPart; маркировка: $silkPart; $_finish; $testPart$stackTag';
+        'маска: $maskPart; маркировка: $silkPart; $finShort; $testPart';
   }
 
   String _fmtRuMoney(double val) {
@@ -2183,13 +2182,12 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     final customerName = _customerController.text.trim().isEmpty
         ? 'ООО «Заказчик»'
         : _customerController.text.trim();
-    final managerName = _managerController.text.trim().isEmpty
-        ? '_________________________'
-        : _managerController.text.trim();
+    final managerName = _managerController.text.trim();
 
     final List itemsToRender = [];
+    bool isMultiQtyVariants = false;
 
-    if (_blankBoardsList.isNotEmpty) {
+    if (_blankBoardsList.length > 1) {
       for (int i = 0; i < _blankBoardsList.length; i++) {
         final b = _blankBoardsList[i] as Map;
         final bName = b['board_name']?.toString().trim() ?? 'Позиция ${i + 1}';
@@ -2248,9 +2246,10 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
           leadDays = layers >= 4 ? 20 : 14;
         }
 
-        final spec = '$oType; $layers сл; ${effW.toStringAsFixed(0)}х${effH.toStringAsFixed(0)} мм; $contour; '
-            '$mat-${thick} мм-${foil} мкм; маска: $rawMs $maskColor; маркировка: $rawSs $silkColor; '
-            '$fin; ${eTest ? "Эл. тест." : "Без эл. теста."}';
+        final finShort = fin.startsWith('HAL') ? 'HAL' : fin;
+        final spec = '$oType; $layers сл; ${effW.toStringAsFixed(0)}x${effH.toStringAsFixed(0)}мм; $contour; '
+            '$mat-${thick}мм-${foil}мкм; маска: $rawMs $maskColor; маркировка: $rawSs $silkColor; '
+            '$finShort; ${eTest ? "Эл. тест." : "Без эл. теста."}';
 
         itemsToRender.add({
           'idx': i + 1,
@@ -2266,19 +2265,28 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         });
       }
     } else {
+      // Одна плата, но возможно несколько вариантов тиража (например: 10, 20, 30 шт. как в КП-2054 ЦНИИ)
       final w = double.tryParse(_widthController.text.replaceAll(',', '.')) ?? 0;
       final h = double.tryParse(_heightController.text.replaceAll(',', '.')) ?? 0;
-      final qty = int.tryParse(_qtyController.text.trim()) ?? 10;
+      final primaryQty = int.tryParse(_qtyController.text.trim()) ?? 10;
+
+      final List<int> qtyVariants = [primaryQty];
+      final extraRaw = _extraQtysController.text.trim();
+      if (extraRaw.isNotEmpty) {
+        for (final part in extraRaw.split(RegExp(r'[,;\s]+'))) {
+          final q = int.tryParse(part.trim());
+          if (q != null && q > 0 && !qtyVariants.contains(q)) {
+            qtyVariants.add(q);
+          }
+        }
+      }
+      isMultiQtyVariants = qtyVariants.length > 1;
+
       final effW = w > 0 ? w : 50.0;
       final effH = h > 0 ? h : 50.0;
       final singleDm2 = _calcEffectiveSingleDm2(effW, effH);
-      final totalDm2 = singleDm2 * math.max(qty, 1);
       final baseP = double.tryParse(_basePriceDm2Controller.text.replaceAll(',', '.')) ?? 459.0;
       final setupP = double.tryParse(_setupFeeController.text.replaceAll(',', '.')) ?? 1800.0;
-      final pureSum = (totalDm2 * baseP) + setupP;
-      final unitPriceNoVat = pureSum / math.max(qty, 1);
-      final vatSum = pureSum * 0.22;
-      final totalWithVat = pureSum + vatSum;
 
       final int leadDays;
       if (_urgency == 'СуперЭкспресс') {
@@ -2289,18 +2297,30 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         leadDays = _layersCount >= 4 ? 20 : 14;
       }
 
-      itemsToRender.add({
-        'idx': 1,
-        'name': 'Печатные платы ${_orderNameController.text.trim().isEmpty ? "изделие" : _orderNameController.text.trim()}',
-        'spec': _buildSpecificationLine(),
-        'days': leadDays,
-        'area': totalDm2,
-        'qty': qty,
-        'unitPrice': unitPriceNoVat,
-        'sumNoVat': pureSum,
-        'vat': vatSum,
-        'totalWithVat': totalWithVat,
-      });
+      final boardTitle = _orderNameController.text.trim().isEmpty ? 'изделие' : _orderNameController.text.trim();
+      final spec = _buildSpecificationLine();
+
+      for (int i = 0; i < qtyVariants.length; i++) {
+        final q = qtyVariants[i];
+        final totalDm2 = singleDm2 * math.max(q, 1);
+        final pureSum = (totalDm2 * baseP) + setupP;
+        final unitPriceNoVat = pureSum / math.max(q, 1);
+        final vatSum = pureSum * 0.22;
+        final totalWithVat = pureSum + vatSum;
+
+        itemsToRender.add({
+          'idx': i + 1,
+          'name': 'Печатные платы $boardTitle',
+          'spec': spec,
+          'days': leadDays,
+          'area': totalDm2,
+          'qty': q,
+          'unitPrice': unitPriceNoVat,
+          'sumNoVat': pureSum,
+          'vat': vatSum,
+          'totalWithVat': totalWithVat,
+        });
+      }
     }
 
     double grandNoVat = 0;
@@ -2325,7 +2345,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
           <td class="r" rowspan="2">${_fmtRuMoney(it['unitPrice'] as double)}</td>
           <td class="r" rowspan="2">${_fmtRuMoney(it['sumNoVat'] as double)}</td>
           <td class="r" rowspan="2">${_fmtRuMoney(it['vat'] as double)}</td>
-          <td class="r b" rowspan="2">${_fmtRuMoney(it['totalWithVat'] as double)}</td>
+          <td class="r" rowspan="2">${_fmtRuMoney(it['totalWithVat'] as double)}</td>
         </tr>
         <tr class="item-bot">
           <td class="spec">${it['spec']}</td>
@@ -2333,109 +2353,170 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       ''');
     }
 
-    // Точные фирменные цвета из PDF-шаблона КП-2054 (#000080 / #022D60)
+    // Если в КП несколько вариантов тиража одной платы (10, 20, 30 шт. как в КП-2054),
+    // общий итог не суммируется, чтобы не складывать 3 альтернативных тиража
+    final totalsBlockHtml = isMultiQtyVariants
+        ? ''
+        : '''
+          <table class="totals-box">
+            <tr>
+              <td class="r">Итого без НДС:</td>
+              <td class="r b">${_fmtRuMoney(grandNoVat)} руб.</td>
+            </tr>
+            <tr>
+              <td class="r">НДС 22%:</td>
+              <td class="r">${_fmtRuMoney(grandVat)} руб.</td>
+            </tr>
+            <tr>
+              <td class="r b">Итого с НДС:</td>
+              <td class="r b">${_fmtRuMoney(grandWithVat)} руб.</td>
+            </tr>
+          </table>
+        ''';
+
+    // Точная копия структуры, цветов (#000080 / #022D60) и шрифтов КП-2054 (формат А4 книжный)
     final htmlDoc = '''<!DOCTYPE html>
 <html lang="ru">
 <head>
 <meta charset="UTF-8">
 <title>КП № $kpNum — $customerName</title>
 <style>
-  @page { size: A4 landscape; margin: 10mm 12mm; }
+  @page { size: A4 portrait; margin: 12mm 10mm; }
   body {
     font-family: Arial, Helvetica, sans-serif;
-    font-size: 11pt;
+    font-size: 9pt;
     color: #000000;
-    margin: 18px 24px;
+    margin: 16px 20px;
     background: #ffffff;
   }
-  .header-table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
-  .logo-wrap { display: inline-flex; align-items: center; gap: 7px; }
-  .logo-icon {
-    width: 26px; height: 26px; border-radius: 50%;
-    border: 3.5px solid #022D60; border-right-color: transparent;
-    display: inline-block; position: relative;
+  .top-slogan {
+    text-align: center;
+    font-size: 8.5pt;
+    font-weight: bold;
+    color: #000080;
+    letter-spacing: 0.4px;
+    margin-bottom: 2px;
   }
-  .logo-icon::after {
-    content: ""; position: absolute; right: -4px; top: 8px;
-    width: 12px; height: 3.5px; background: #022D60;
+  .header-table {
+    width: 100%;
+    border-collapse: collapse;
+    border-bottom: 1.2px solid #000080;
+    padding-bottom: 4px;
+    margin-bottom: 12px;
   }
-  .brand-blue { font-size: 23pt; font-weight: bold; color: #022D60; letter-spacing: -0.5px; }
-  .brand-dark { font-size: 23pt; font-weight: normal; color: #000080; letter-spacing: -0.5px; }
-  .sub-brand { font-size: 12pt; font-weight: bold; color: #000080; text-align: right; letter-spacing: 0.3px; }
-  .contacts { font-size: 10pt; color: #000080; margin-top: 2px; }
-  .customer-line { margin: 14px 0 10px 0; font-size: 11.5pt; color: #000000; }
-  .customer-line b { font-weight: bold; }
-  .customer-val { margin-left: 18px; }
+  .logo-wrap { display: inline-flex; align-items: center; gap: 6px; }
+  .logo-circle {
+    width: 24px; height: 24px; border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #fff7cc, #f59e0b 55%, #022D60 85%);
+    border: 2px solid #022D60;
+    display: inline-block;
+  }
+  .brand-bold { font-size: 19pt; font-weight: bold; color: #022D60; letter-spacing: -0.4px; }
+  .brand-reg { font-size: 19pt; font-weight: normal; color: #000080; letter-spacing: -0.4px; }
+  .contacts-row td {
+    font-size: 8.5pt;
+    color: #000080;
+    padding-top: 2px;
+    padding-bottom: 4px;
+  }
+  .site-link {
+    font-size: 10.5pt;
+    color: #000080;
+    text-align: center;
+  }
+  .customer-line {
+    margin: 14px 0 12px 0;
+    font-size: 10pt;
+    color: #000000;
+  }
   .title-kp {
     text-align: center;
-    font-size: 13pt;
+    font-size: 11pt;
     font-weight: bold;
     color: #000000;
-    margin: 14px 0 12px 0;
+    margin: 12px 0 12px 0;
   }
   table.main {
     width: 100%;
     border-collapse: collapse;
-    margin-bottom: 12px;
-    font-size: 10pt;
+    margin-bottom: 10px;
+    font-size: 7.5pt;
     color: #000000;
   }
   table.main th {
-    border: 1px solid #000000;
+    border: 0.8px solid #000000;
     background-color: #ffffff;
-    font-weight: bold;
+    font-weight: normal;
     text-align: center;
-    padding: 5px 5px;
-    line-height: 1.2;
+    padding: 4px 3px;
+    line-height: 1.15;
+  }
+  table.main th.sm {
+    font-size: 6.2pt;
   }
   table.main td {
-    border: 1px solid #000000;
-    padding: 4px 6px;
+    border: 0.8px solid #000000;
+    padding: 3px 4px;
     vertical-align: middle;
   }
+  table.main td.num-cell {
+    font-size: 8.5pt;
+  }
   table.main tr.item-top td.item-title {
-    border-bottom: 1px solid #666666;
-    font-weight: normal;
-    padding-top: 5px;
-    padding-bottom: 4px;
+    border-bottom: 0.6px solid #000000;
+    font-size: 8pt;
+    padding-top: 4px;
+    padding-bottom: 3px;
   }
   table.main tr.item-bot td.spec {
     border-top: none;
-    font-size: 9.5pt;
+    font-size: 6.8pt;
     color: #000000;
-    padding-top: 4px;
-    padding-bottom: 5px;
+    line-height: 1.25;
+    padding-top: 3px;
+    padding-bottom: 4px;
   }
   .c { text-align: center; }
   .r { text-align: right; white-space: nowrap; }
   .b { font-weight: bold; }
-  .delivery-row { margin: 10px 0 14px 0; font-size: 11pt; }
-  .delivery-row b { font-weight: bold; margin-right: 18px; }
-  .totals-box { float: right; margin-top: -34px; font-size: 10.5pt; border-collapse: collapse; }
-  .totals-box td { padding: 2px 8px; }
+  .delivery-row {
+    margin: 8px 0 10px 0;
+    font-size: 7.5pt;
+  }
+  .totals-box {
+    float: right;
+    margin-top: -18px;
+    margin-bottom: 8px;
+    font-size: 8pt;
+    border-collapse: collapse;
+  }
+  .totals-box td { padding: 1.5px 6px; }
   .clear { clear: both; }
-  .notice-wrap { text-align: center; margin: 12px 0 14px 0; }
-  .notice {
-    border: 1.5px solid #000000;
-    padding: 4px 26px;
+  .notice-box {
+    border-top: 1px solid #000000;
+    border-bottom: 1px solid #000000;
+    text-align: center;
+    padding: 3px 0;
     font-weight: bold;
-    font-size: 11pt;
-    display: inline-block;
-    letter-spacing: 0.4px;
+    font-size: 8pt;
+    margin: 8px 0 8px 0;
+    letter-spacing: 0.3px;
   }
   .terms {
-    font-size: 10pt;
-    line-height: 1.4;
-    margin-top: 8px;
+    font-size: 6.8pt;
+    line-height: 1.35;
+    border-bottom: 1px solid #000000;
+    padding-bottom: 6px;
   }
   .footer-sign {
-    margin-top: 24px;
-    font-size: 11pt;
+    margin-top: 18px;
+    font-size: 7.5pt;
+    line-height: 1.4;
   }
-  .footer-sign span {
-    margin-left: 36px;
+  .manager-name {
     font-family: "Times New Roman", Times, serif;
     font-weight: bold;
+    font-size: 8pt;
   }
   @media print {
     .no-print { display: none !important; }
@@ -2445,27 +2526,29 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
 </head>
 <body>
 <div class="no-print" style="background:#eef4fb;padding:10px 14px;border-radius:8px;margin-bottom:14px;border:1px solid #002E63;font-size:12px;color:#002E63;">
-  <b>Официальный бланк КП № $kpNum готов!</b> Нажмите <b>Ctrl + P</b> → <b>«Сохранить как PDF»</b> (альбомная ориентация, поля «По умолчанию»).
+  <b>Официальный бланк КП № $kpNum (формат А4, как КП-2054) готов!</b> Нажмите <b>Ctrl + P</b> → <b>«Сохранить как PDF»</b> (книжная ориентация).
 </div>
+
+<div class="top-slogan">РОССИЙСКИЙ ЗАВОД ПЕЧАТНЫХ ПЛАТ</div>
 
 <table class="header-table">
   <tr>
-    <td style="vertical-align:top;">
+    <td colspan="3" style="padding-bottom:2px;">
       <div class="logo-wrap">
-        <span class="logo-icon"></span>
-        <span><span class="brand-blue">электро</span><span class="brand-dark">коннект</span></span>
+        <span class="logo-circle"></span>
+        <span><span class="brand-bold">электро</span><span class="brand-reg">коннект</span></span>
       </div>
-      <div class="contacts">Тел : &nbsp;+ (383) 3361001 , 3361003</div>
     </td>
-    <td style="text-align:right;vertical-align:top;padding-top:6px;">
-      <div class="sub-brand">РОССИЙСКИЙ ЗАВОД ПЕЧАТНЫХ ПЛАТ</div>
-      <div class="contacts">www.pselectro.ru &nbsp;&nbsp;&nbsp;&nbsp;&nbsp; order@pselectro.ru</div>
-    </td>
+  </tr>
+  <tr class="contacts-row">
+    <td style="width:36%;">Тел : &nbsp;+ (383) 3361001 , 3361003</td>
+    <td class="site-link" style="width:32%;">www.pselectro.ru</td>
+    <td style="width:32%;text-align:right;">order@pselectro.ru</td>
   </tr>
 </table>
 
 <div class="customer-line">
-  <b>Заказчик :</b> <span class="customer-val">$customerName</span>
+  Заказчик : &nbsp;$customerName
 </div>
 
 <div class="title-kp">
@@ -2475,16 +2558,16 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
 <table class="main">
   <thead>
     <tr>
-      <th style="width:26px;">№</th>
+      <th style="width:20px;">№</th>
       <th>Наименование товара</th>
-      <th style="width:82px;">Срок<br>изготовления<br>(рабочих дней)</th>
-      <th style="width:66px;">Площадь<br>(кв.дм.)</th>
-      <th style="width:44px;">Ед.изм</th>
-      <th style="width:46px;">Кол-<br>во</th>
-      <th style="width:68px;">Цена</th>
-      <th style="width:76px;">Сумма</th>
-      <th style="width:68px;">НДС 22%</th>
-      <th style="width:82px;">Сумма с НДС</th>
+      <th class="sm" style="width:52px;">Срок<br>изготовления<br>(рабочих дней)</th>
+      <th class="sm" style="width:44px;">Площадь<br>(кв.дм.)</th>
+      <th style="width:30px;">Ед.и<br>зм</th>
+      <th style="width:32px;">Кол-<br>во</th>
+      <th style="width:48px;">Цена</th>
+      <th style="width:54px;">Сумма</th>
+      <th style="width:48px;">НДС 22%</th>
+      <th style="width:58px;">Сумма с НДС</th>
     </tr>
   </thead>
   <tbody>
@@ -2493,38 +2576,26 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
 </table>
 
 <div class="delivery-row">
-  <b>Доставка до :</b> Самовывоз
+  Доставка до : &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; Самовывоз
 </div>
 
-<table class="totals-box">
-  <tr>
-    <td class="r">Итого без НДС:</td>
-    <td class="r b">${_fmtRuMoney(grandNoVat)} руб.</td>
-  </tr>
-  <tr>
-    <td class="r">НДС 22%:</td>
-    <td class="r">${_fmtRuMoney(grandVat)} руб.</td>
-  </tr>
-  <tr>
-    <td class="r b">Итого с НДС:</td>
-    <td class="r b">${_fmtRuMoney(grandWithVat)} руб.</td>
-  </tr>
-</table>
+$totalsBlockHtml
 <div class="clear"></div>
 
-<div class="notice-wrap">
-  <div class="notice">НЕ ЯВЛЯЕТСЯ ОСНОВАНИЕМ ДЛЯ ОПЛАТЫ</div>
+<div class="notice-box">
+  НЕ ЯВЛЯЕТСЯ ОСНОВАНИЕМ ДЛЯ ОПЛАТЫ
 </div>
 
 <div class="terms">
   1. &nbsp;Настоящее коммерческое предложение подготовлено на основе предоставленных сведений. В случае внесения изменений в исходные данные, стоимость и сроки изготовления могут быть скорректированы.<br>
-  2. &nbsp;Предложение действительно 5 рабочих дней.<br>
-  3. &nbsp;Оплата заказа производится на основании счета-договора.<br>
-  4. &nbsp;При наличии доставки, она включена в стоимость и указан адрес или город получателя в графе "Доставка до".
+  2. Предложение действительно 5 рабочих дней.<br>
+  3. Оплата заказа производится на основании счета-договора.<br>
+  4. При наличии доставки, она включена в стоимость и указан адрес или город получателя в графе "Доставка до" .
 </div>
 
 <div class="footer-sign">
-  Менеджер по работе с клиентами <span>$managerName</span>
+  Менеджер по работе с клиентами<br>
+  <span class="manager-name">$managerName</span>
 </div>
 </body>
 </html>''';
@@ -2595,7 +2666,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     }
     sb.writeln('Обозначение платы: ${_orderNameController.text.trim().isEmpty ? "Без названия" : _orderNameController.text.trim()}');
     sb.writeln('Тип / срочность:   $_orderType • $_urgency');
-    sb.writeln('Тираж:             $qty шт. (расч. площадь 1 шт: ${singleDm2.toStringAsFixed(3)} дм², партия: ${totalDm2.toStringAsFixed(2)} дм²)');
+    sb.writeln('Тираж:             $qty шт. (расч. площадь 1 шт: ${singleDm2.toStringAsFixed(2)} дм², партия: ${totalDm2.toStringAsFixed(2)} дм²)');
     sb.writeln('--------------------------------------------------------------------');
     sb.writeln('РАСЧЕТ СТОИМОСТИ:');
     if (_webPriceResult != null) {
@@ -3094,6 +3165,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                             Row(
                               children: [
                                 Expanded(
+                                  flex: 3,
                                   child: _dropdownField(
                                     label: 'Тип заказа',
                                     value: _orderType,
@@ -3106,6 +3178,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                 ),
                                 const SizedBox(width: 12),
                                 Expanded(
+                                  flex: 3,
                                   child: _dropdownField(
                                     label: 'Срочность',
                                     value: _urgency,
@@ -3117,7 +3190,19 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                   ),
                                 ),
                                 const SizedBox(width: 12),
-                                Expanded(child: _inputField(controller: _qtyController, label: 'Тираж, шт.', keyboardType: TextInputType.number, boldNumber: true)),
+                                Expanded(
+                                  flex: 2,
+                                  child: _inputField(controller: _qtyController, label: 'Тираж, шт.', keyboardType: TextInputType.number, boldNumber: true),
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  flex: 3,
+                                  child: _inputField(
+                                    controller: _extraQtysController,
+                                    label: 'Доп. тиражи в КП',
+                                    hint: 'напр. 20, 30',
+                                  ),
+                                ),
                               ],
                             ),
                             const SizedBox(height: 14),
@@ -3149,7 +3234,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                     children: [
                                       Text(
-                                        'Расч. площадь 1 шт: ${singleAreaDm2.toStringAsFixed(3)} дм²',
+                                        'Расч. площадь 1 шт: ${singleAreaDm2.toStringAsFixed(2)} дм²',
                                         style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600),
                                       ),
                                       Text(
