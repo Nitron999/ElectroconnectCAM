@@ -233,6 +233,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         break;
     }
 
+    if (_material == 'FR4 Tg170') dm2Rate *= 1.15;
     if (_material == 'Алюминий') dm2Rate *= 1.35;
     if (_material == 'Rogers') dm2Rate *= 2.80;
 
@@ -339,13 +340,22 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     sb.writeln(r'    data = {"ok": True, "notes": []}');
     sb.writeln(r'    for row in rows:');
     sb.writeln(r'        ne = [x for x in row if x]');
+    sb.writeln(r'        if not ne: continue');
+    sb.writeln(r'        row_joined = " ".join(ne).lower()');
+    sb.writeln(r'        if "tg170" in row_joined or "tg 170" in row_joined: data["material"] = "FR4 Tg170"');
+    sb.writeln(r'        elif "rogers" in row_joined: data["material"] = "Rogers"');
+    sb.writeln(r'        elif "алюмин" in row_joined: data["material"] = "Алюминий"');
+    sb.writeln(r'        if "полуотверст" in row_joined: data["notes"].append("Металлизированные полуотверстия")');
+    sb.writeln(r'        if "фаска" in row_joined:');
+    sb.writeln(r'            for x in ne:');
+    sb.writeln(r'                if "фаска" in x.lower(): data["notes"].append(x)');
     sb.writeln(r'        if len(ne) < 2: continue');
     sb.writeln(r'        lbl, val = ne[0].lower(), ne[1]');
     sb.writeln(r'        if re.fullmatch(r"\d+\.?", lbl) and len(ne) >= 3:');
     sb.writeln(r'            lbl, val = ne[1].lower(), ne[2]');
-    sb.writeln(r'        row_joined = " ".join(ne).lower()');
     sb.writeln(r'        if "заказчик" in lbl and "название" in lbl: data["customer"] = val');
     sb.writeln(r'        elif "тип заказа" in lbl: data["order_type"] = "Повтор" if "повтор" in val.lower() else "Новый"');
+    sb.writeln(r'        elif "имя файла" in lbl: data["board_name"] = val');
     sb.writeln(r'        elif "количество плат" in lbl:');
     sb.writeln(r'            m = re.search(r"(\d+)", val)');
     sb.writeln(r'            if m: data["qty"] = int(m.group(1))');
@@ -365,14 +375,21 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     sb.writeln(r'            if m: data["foil"] = m.group(1)');
     sb.writeln(r'        elif "паяльная маска" in lbl: data["mask_side"] = val');
     sb.writeln(r'        elif "маркировка" in lbl: data["silk_side"] = val');
-    sb.writeln(r'        elif "покрытие" in lbl and "ножев" not in lbl and "разъем" not in lbl and "разъём" not in lbl:');
+    sb.writeln(r'        elif "покрыт" in lbl and "ножев" not in lbl and "разъем" not in lbl and "разъём" not in lbl:');
     sb.writeln(r'            data["finish"] = val');
     sb.writeln(r'        elif "ножевых" in lbl and val.lower() not in ("нет", "-", "0", ""): data["notes"].append("Покрытие ножевых разъёмов: " + val)');
     sb.writeln(r'        elif "вариант мпп" in lbl and val.lower() not in ("нет", "-", ""): data["notes"].append("Вариант МПП: " + val)');
+    sb.writeln(r'        elif "переходные отверстия" in lbl and val.lower() not in ("нет", "-", ""): data["notes"].append("Переходные отверстия: " + val)');
     sb.writeln(r'        elif "электроконтрол" in lbl: data["electro_test"] = ("нет" not in val.lower())');
     sb.writeln(r'        elif "обработки контура" in lbl: data["contour"] = val.lower()');
-    sb.writeln(r'        if "rogers" in row_joined: data["material"] = "Rogers"');
-    sb.writeln(r'        elif "алюмин" in row_joined: data["material"] = "Алюминий"');
+    sb.writeln(r'    # Убираем дубли из notes');
+    sb.writeln(r'    seen = set()');
+    sb.writeln(r'    uniq_notes = []');
+    sb.writeln(r'    for n in data["notes"]:');
+    sb.writeln(r'        if n not in seen:');
+    sb.writeln(r'            seen.add(n)');
+    sb.writeln(r'            uniq_notes.append(n)');
+    sb.writeln(r'    data["notes"] = uniq_notes');
     sb.writeln(r'    open(OUT_JSON, "w", encoding="utf-8").write(json.dumps(data, ensure_ascii=False))');
     sb.writeln(r'if __name__ == "__main__": main()');
     return sb.toString();
@@ -551,8 +568,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     sb.writeln(r'                res["price"] = found[-1][1] + " руб."');
     sb.writeln(r'                res["raw"] = "Считано со страницы pselectro.ru"');
     sb.writeln(r'            else:');
-    sb.writeln(r'                res["error"] = "Сайт не вернул цифру итога (возможно, расчёт по этой плате идёт через заявку менеджеру)."');
-    sb.writeln(r'            page.wait_for_timeout(3000)');
+    sb.writeln(r'                res["error"] = "На странице pselectro.ru форма расчёта требует отправки файлов менеджеру (онлайн-цена не отображается)."');
+    sb.writeln(r'            page.wait_for_timeout(2500)');
     sb.writeln(r'            browser.close()');
     sb.writeln(r'    except Exception as e:');
     sb.writeln(r'        res["error"] = str(e)');
@@ -950,6 +967,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
           if (blankData['customer'] != null && blankData['customer'].toString().isNotEmpty) {
             _customerController.text = blankData['customer'].toString();
           }
+          if (blankData['board_name'] != null && blankData['board_name'].toString().isNotEmpty) {
+            _orderNameController.text = '$projectTitle (${blankData['board_name']})';
+          }
           if (blankData['order_type'] != null) {
             _orderType = blankData['order_type'].toString();
           }
@@ -1017,7 +1037,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       });
 
       if (blankData != null) {
-        _showSnack('Данные автоматически загружены из бланка заказа Excel (.XLS)!');
+        _showSnack('Все параметры (включая покрытие и материал) загружены из Excel!');
       } else if (hasUnpackedNestedArchive) {
         _showSnack('Не удалось распаковать вложенный .RAR — укажите X и Y вручную.');
       } else if (detectedWidth == null) {
@@ -1646,7 +1666,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                   child: _dropdownField(
                                     label: 'Материал',
                                     value: _material,
-                                    items: const ['FR4', 'Алюминий', 'Rogers'],
+                                    items: const ['FR4', 'FR4 Tg170', 'Алюминий', 'Rogers'],
                                     onChanged: (v) => setState(() {
                                       _material = v!;
                                       _recalculateTariffFromSpecs();
