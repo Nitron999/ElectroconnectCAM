@@ -1699,7 +1699,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         ? 'ООО «Заказчик»'
         : _customerController.text.trim();
 
-    final List> itemsToRender = [];
+    final itemsToRender = >[];
 
     if (_blankBoardsList.isNotEmpty) {
       for (int i = 0; i < _blankBoardsList.length; i++) {
