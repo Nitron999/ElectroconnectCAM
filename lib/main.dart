@@ -310,38 +310,40 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   String _buildExcelParserPythonCode() {
     final sb = StringBuffer();
     sb.writeln('# -*- coding: utf-8 -*-');
-    sb.writeln('import json, re, sys');
+    sb.writeln('import json, os, re, subprocess, sys');
     sb.writeln('EXCEL_PATH = sys.argv[1]');
     sb.writeln('OUT_JSON = sys.argv[2]');
-    sb.writeln('def read_com(path):');
-    sb.writeln('    import win32com.client');
-    sb.writeln('    excel = win32com.client.DispatchEx("Excel.Application")');
-    sb.writeln('    excel.Visible = False');
-    sb.writeln('    excel.DisplayAlerts = False');
-    sb.writeln('    wb = excel.Workbooks.Open(path, ReadOnly=True)');
-    sb.writeln('    ws = wb.Sheets(1)');
-    sb.writeln('    rows = []');
-    sb.writeln('    for r in range(1, 55):');
-    sb.writeln('        rows.append(["" if ws.Cells(r, c).Value is None else str(ws.Cells(r, c).Value).strip() for c in range(1, 15)])');
-    sb.writeln('    wb.Close(False)');
-    sb.writeln('    excel.Quit()');
-    sb.writeln('    return rows');
+    sb.writeln('def ensure_pkg(pkg):');
+    sb.writeln('    try:');
+    sb.writeln('        __import__(pkg)');
+    sb.writeln('    except ImportError:');
+    sb.writeln('        subprocess.run([sys.executable, "-m", "pip", "install", "-q", pkg], check=False)');
     sb.writeln('def read_lib(path):');
     sb.writeln('    if path.lower().endswith(".xlsx"):');
+    sb.writeln('        ensure_pkg("openpyxl")');
     sb.writeln('        import openpyxl');
     sb.writeln('        wb = openpyxl.load_workbook(path, data_only=True)');
     sb.writeln('        ws = wb.active');
     sb.writeln('        return [["" if ws.cell(r, c).value is None else str(ws.cell(r, c).value).strip() for c in range(1, 15)] for r in range(1, 55)]');
+    sb.writeln('    ensure_pkg("xlrd")');
     sb.writeln('    import xlrd');
     sb.writeln('    wb = xlrd.open_workbook(path)');
     sb.writeln('    sh = wb.sheet_by_index(0)');
     sb.writeln('    return [[str(sh.cell_value(r, c)).strip() for c in range(min(15, sh.ncols))] for r in range(min(55, sh.nrows))]');
+    sb.writeln('def read_ps_excel(path):');
+    sb.writeln('    ps = f"""$e = New-Object -ComObject Excel.Application; $e.Visible = $false; $e.DisplayAlerts = $false; $wb = $e.Workbooks.Open(\'{path}\', 0, $true); $ws = $wb.Sheets.Item(1); $out = @(); for($r=1;$r -le 55;$r++){{ $row = @(); for($c=1;$c -le 12;$c++){{ $v = $ws.Cells.Item($r,$c).Text; $row += $v }}; $out += ($row -join "|||") }}; $wb.Close($false); $e.Quit(); $out -join "`n" """');
+    sb.writeln('    res = subprocess.run(["powershell", "-NoProfile", "-Command", ps], capture_output=True, text=True, encoding="utf-8", errors="ignore")');
+    sb.writeln('    rows = []');
+    sb.writeln('    for line in res.stdout.splitlines():');
+    sb.writeln('        rows.append([x.strip() for x in line.split("|||")])');
+    sb.writeln('    return rows');
     sb.writeln('def main():');
+    sb.writeln('    rows = []');
     sb.writeln('    try:');
     sb.writeln('        rows = read_lib(EXCEL_PATH)');
     sb.writeln('    except Exception:');
     sb.writeln('        try:');
-    sb.writeln('            rows = read_com(EXCEL_PATH)');
+    sb.writeln('            rows = read_ps_excel(EXCEL_PATH)');
     sb.writeln('        except Exception as e:');
     sb.writeln('            open(OUT_JSON, "w", encoding="utf-8").write(json.dumps({"ok": False, "error": str(e)}))');
     sb.writeln('            return');
@@ -391,8 +393,12 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       final outJson = File('${tempDir.path}\\ec_blank_parsed.json');
       if (outJson.existsSync()) outJson.deleteSync();
 
+      // Копируем бланк во временный файл с чистым латинским именем, чтобы исключить сбои из-за квадратиков кодировки
+      final cleanXlsPath = '${tempDir.path}\\clean_blank_${DateTime.now().millisecondsSinceEpoch}${excelPath.toLowerCase().endsWith('.xlsx') ? '.xlsx' : '.xls'}';
+      await File(excelPath).copy(cleanXlsPath);
+
       await pyFile.writeAsString(_buildExcelParserPythonCode(), encoding: utf8);
-      await Process.run('python', [pyFile.path, excelPath, outJson.path], runInShell: true);
+      await Process.run('python', [pyFile.path, cleanXlsPath, outJson.path], runInShell: true);
 
       if (outJson.existsSync()) {
         final raw = await outJson.readAsString(encoding: utf8);
@@ -600,8 +606,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   }
 
   Future<String> _saveTempBytes(Directory dir, String rawFileName, List<int> fileBytes) async {
-    final safeName = rawFileName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
-    final outFile = File('${dir.path}${Platform.pathSeparator}$safeName');
+    // Заменяем любые не-ASCII символы (битую кириллицу из ZIP) на подчеркивания для безопасного пути Windows
+    final safeName = rawFileName.replaceAll(RegExp(r'[^\w.\-]+'), '_');
+    final outFile = File('${dir.path}${Platform.pathSeparator}${DateTime.now().microsecondsSinceEpoch}_$safeName');
     await outFile.writeAsBytes(fileBytes);
     return outFile.path;
   }
