@@ -167,8 +167,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   final TextEditingController _minHoleController = TextEditingController(text: '0.30');
   final TextEditingController _notesController = TextEditingController();
 
-  final TextEditingController _basePriceDm2Controller = TextEditingController(text: '528.0');
-  final TextEditingController _setupFeeController = TextEditingController(text: '2400.0');
+  final TextEditingController _basePriceDm2Controller = TextEditingController(text: '466.0');
+  final TextEditingController _setupFeeController = TextEditingController(text: '2406.0');
   bool _manualPriceOverride = false;
 
   bool _isFetchingWebPrice = false;
@@ -204,6 +204,10 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     );
   }
 
+  /// Откалиброванная по реальному КП № 330 завода «ЭЛЕКТРОконнект» формула:
+  /// - Подготовка (setupFee) фиксирована и НЕ умножается на срочность.
+  /// - Экспресс (6 раб. дн.) умножает ставку за дм² на 1.54, СуперЭкспресс — на 2.00.
+  /// - Минимальная расчётная площадь 1 платы с техполями = 0.03 дм²/шт.
   ({double dm2Rate, double setupFee}) _computeRatesForSpecs({
     required int layers,
     required String material,
@@ -219,27 +223,27 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     double setupFee;
     switch (layers) {
       case 1:
-        dm2Rate = 380.0;
+        dm2Rate = 340.0;
         setupFee = 1800.0;
         break;
       case 2:
-        dm2Rate = 528.0;
-        setupFee = 2400.0;
+        dm2Rate = 466.0;
+        setupFee = 2406.0;
         break;
       case 4:
-        dm2Rate = 1150.0;
+        dm2Rate = 1080.0;
         setupFee = 5500.0;
         break;
       case 6:
-        dm2Rate = 1750.0;
+        dm2Rate = 1650.0;
         setupFee = 8500.0;
         break;
       case 8:
-        dm2Rate = 2400.0;
+        dm2Rate = 2300.0;
         setupFee = 12000.0;
         break;
       default:
-        dm2Rate = 3200.0 + (layers - 10) * 350.0;
+        dm2Rate = 3100.0 + (layers - 10) * 350.0;
         setupFee = 16000.0;
         break;
     }
@@ -271,14 +275,19 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     }
 
     if (urgency == 'Экспресс') {
-      dm2Rate *= 1.50;
-      setupFee *= 1.50;
+      dm2Rate *= 1.538;
     } else if (urgency == 'СуперЭкспресс') {
       dm2Rate *= 2.00;
-      setupFee *= 2.00;
     }
 
     return (dm2Rate: dm2Rate, setupFee: setupFee);
+  }
+
+  double _calcEffectiveSingleDm2(double w, double h) {
+    if (w <= 0 || h <= 0) return 0.0;
+    final rawDm2 = (w * h) / 10000.0;
+    // Заводской минимум расчётной площади мелкой платы с тех. полями (по КП №330: 13x21мм -> 0.03 дм²/шт)
+    return math.max(rawDm2, 0.03);
   }
 
   bool _hasCustomStackOrPressing(String notesText, int layers) {
@@ -341,7 +350,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     _recalculateTariffFromSpecs(force: true);
 
     if (showToast) {
-      _showSnack('Проект очищен. Готово к загрузке нового архива!');
+      _showSnack('Проект очищен. Готово к загрузке нового архива или бланка!');
     }
   }
 
@@ -363,7 +372,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       _customerController.text = board['customer'].toString();
     }
     final bName = board['board_name']?.toString().trim() ?? '';
-    _orderNameController.text = bName.isNotEmpty ? '$baseTitle ($bName)' : baseTitle;
+    _orderNameController.text = bName.isNotEmpty
+        ? (baseTitle.isNotEmpty && !bName.contains(baseTitle) ? '$baseTitle ($bName)' : bName)
+        : baseTitle;
 
     if (board['order_type'] != null) {
       _orderType = board['order_type'].toString();
@@ -457,7 +468,6 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     }
     if (board['notes'] is List) {
       final rawNotes = (board['notes'] as List).map((e) => e.toString()).toList();
-      // Фильтруем МПП-специфичные требования для 1-2 слойных плат
       final filtered = rawNotes.where((n) {
         if (_layersCount < 4) {
           final nl = n.toLowerCase();
@@ -469,10 +479,18 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       }).toList();
       _notesController.text = filtered.join('; ');
     }
+
     _manualPriceOverride = false;
     _webPriceResult = null;
     _webPriceDetails = null;
     _recalculateTariffFromSpecs(force: true);
+
+    if (board['kp_price_with_vat'] != null) {
+      final kpSum = (board['kp_price_with_vat'] as num).toDouble();
+      final kpDays = board['kp_days']?.toString() ?? '';
+      _webPriceResult = '${kpSum.toStringAsFixed(2)} руб.';
+      _webPriceDetails = 'Цена из загруженного КП завода (срок: $kpDays раб. дн., НДС 20%)';
+    }
   }
 
   Future<void> _openExtractedFile(String? path, String fileName) async {
@@ -502,9 +520,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     sb.writeln(r'        import openpyxl');
     sb.writeln(r'        wb = openpyxl.load_workbook(path, data_only=True)');
     sb.writeln(r'        ws = wb.active');
-    sb.writeln(r'        for r in range(1, min(75, ws.max_row + 1)):');
+    sb.writeln(r'        for r in range(1, min(80, ws.max_row + 1)):');
     sb.writeln(r'            r_vals = []');
-    sb.writeln(r'            for c in range(1, min(32, ws.max_column + 1)):');
+    sb.writeln(r'            for c in range(1, min(60, ws.max_column + 1)):');
     sb.writeln(r'                cell = ws.cell(r, c)');
     sb.writeln(r'                val = "" if cell.value is None else str(cell.value).strip()');
     sb.writeln(r'                r_vals.append(val)');
@@ -527,9 +545,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     sb.writeln(r'        wb = xlrd.open_workbook(path)');
     sb.writeln(r'        has_fmt = False');
     sb.writeln(r'    sh = wb.sheet_by_index(0)');
-    sb.writeln(r'    for r in range(min(75, sh.nrows)):');
+    sb.writeln(r'    for r in range(min(80, sh.nrows)):');
     sb.writeln(r'        r_vals = []');
-    sb.writeln(r'        for c in range(min(32, sh.ncols)):');
+    sb.writeln(r'        for c in range(min(60, sh.ncols)):');
     sb.writeln(r'            val = str(sh.cell_value(r, c)).strip()');
     sb.writeln(r'            r_vals.append(val)');
     sb.writeln(r'            if has_fmt and val and len(val) > 3:');
@@ -545,11 +563,59 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     sb.writeln(r'    return rows_text, red_notes');
     sb.writeln(r'def clean_num_str(s):');
     sb.writeln(r'    return re.sub(r"\.0$", "", s.strip())');
+    sb.writeln(r'def parse_kp_format(rows):');
+    sb.writeln(r'    # Проверяем, не является ли файл готовым КП завода ("КОММЕРЧЕСКОЕ ПРЕДЛОЖЕНИЕ")');
+    sb.writeln(r'    full_txt = "\n".join(" ".join(x for x in r if x) for r in rows)');
+    sb.writeln(r'    if "коммерческое предложение" not in full_txt.lower():');
+    sb.writeln(r'        return None');
+    sb.writeln(r'    customer = ""');
+    sb.writeln(r'    for r in rows:');
+    sb.writeln(r'        ne = [x for x in r if x]');
+    sb.writeln(r'        if len(ne) >= 2 and "заказчик" in ne[0].lower():');
+    sb.writeln(r'            customer = ne[1]');
+    sb.writeln(r'            break');
+    sb.writeln(r'    boards = []');
+    sb.writeln(r'    for idx, r in enumerate(rows):');
+    sb.writeln(r'        ne = [x for x in r if x]');
+    sb.writeln(r'        if len(ne) >= 7 and re.fullmatch(r"\d+(?:\.0)?", ne[0]) and "печатные платы" in ne[1].lower():');
+    sb.writeln(r'            b_name = ne[1].replace("Печатные платы", "").strip()');
+    sb.writeln(r'            days = int(float(ne[2])) if re.match(r"^\d+", ne[2]) else 9');
+    sb.writeln(r'            qty = int(float(ne[5])) if re.match(r"^\d+", ne[5]) else 10');
+    sb.writeln(r'            sum_vat = float(ne[-1].replace(",", ".")) if re.match(r"^\d", ne[-1]) else 0.0');
+    sb.writeln(r'            urg = "СуперЭкспресс" if days <= 3 else ("Экспресс" if days <= 7 else "Серийный")');
+    sb.writeln(r'            b = {"customer": customer, "board_name": f"{b_name} ({days} дн.)", "qty": qty, "urgency": urg, "kp_price_with_vat": sum_vat, "kp_days": days, "notes": []}');
+    sb.writeln(r'            if idx + 1 < len(rows):');
+    sb.writeln(r'                spec = " ".join(x for x in rows[idx + 1] if x)');
+    sb.writeln(r'                b["order_type"] = "Повтор" if "повтор" in spec.lower() else "Новый"');
+    sb.writeln(r'                m_l = re.search(r"(\d+)\s*сл", spec, re.I)');
+    sb.writeln(r'                if m_l: b["layers"] = int(m_l.group(1))');
+    sb.writeln(r'                m_sz = re.search(r"(\d+(?:[.,]\d+)?)\s*[xхXХ*×]\s*(\d+(?:[.,]\d+)?)", spec)');
+    sb.writeln(r'                if m_sz:');
+    sb.writeln(r'                    b["width"] = float(m_sz.group(1).replace(",", "."))');
+    sb.writeln(r'                    b["height"] = float(m_sz.group(2).replace(",", "."))');
+    sb.writeln(r'                m_th = re.search(r"-(\d+(?:[.,]\d+)?)мм-", spec)');
+    sb.writeln(r'                if m_th: b["thickness"] = m_th.group(1).replace(",", ".")');
+    sb.writeln(r'                m_fl = re.search(r"-(\d+)мкм", spec)');
+    sb.writeln(r'                if m_fl: b["foil"] = m_fl.group(1)');
+    sb.writeln(r'                if "tg170" in spec.lower(): b["material"] = "FR4 Tg170"');
+    sb.writeln(r'                elif "rogers" in spec.lower(): b["material"] = "Rogers"');
+    sb.writeln(r'                elif "алюмин" in spec.lower(): b["material"] = "Алюминий"');
+    sb.writeln(r'                if "золот" in spec.lower(): b["finish"] = "Иммерсионное золото"');
+    sb.writeln(r'                elif "олов" in spec.lower(): b["finish"] = "Иммерсионное олово"');
+    sb.writeln(r'                b["electro_test"] = ("эл. тест" in spec.lower())');
+    sb.writeln(r'                if "маркировка: с одной" in spec.lower(): b["silk_side"] = "С одной стороны"');
+    sb.writeln(r'                elif "маркировка: без" in spec.lower(): b["silk_side"] = "Без маркировки"');
+    sb.writeln(r'            boards.append(b)');
+    sb.writeln(r'    return boards if boards else None');
     sb.writeln(r'def main():');
     sb.writeln(r'    try:');
     sb.writeln(r'        rows, red_notes = read_excel_with_colors(EXCEL_PATH)');
     sb.writeln(r'    except Exception as e:');
     sb.writeln(r'        open(OUT_JSON, "w", encoding="utf-8").write(json.dumps({"ok": False, "error": str(e)}))');
+    sb.writeln(r'        return');
+    sb.writeln(r'    kp_boards = parse_kp_format(rows)');
+    sb.writeln(r'    if kp_boards:');
+    sb.writeln(r'        open(OUT_JSON, "w", encoding="utf-8").write(json.dumps({"ok": True, "boards": kp_boards}, ensure_ascii=False))');
     sb.writeln(r'        return');
     sb.writeln(r'    customer = ""');
     sb.writeln(r'    global_material = None');
@@ -906,13 +972,14 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   Future<void> _pickAndAnalyzeZip() async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: ['zip', 'rar'],
+      allowedExtensions: ['zip', 'rar', 'xls', 'xlsx'],
     );
     if (result == null || result.files.single.path == null) return;
 
     final selectedFile = File(result.files.single.path!);
     final archiveName = selectedFile.path.split(Platform.pathSeparator).last;
     final archiveDir = selectedFile.parent.path;
+    final lowSelected = selectedFile.path.toLowerCase();
 
     try {
       final tempRoot = await getTemporaryDirectory();
@@ -922,7 +989,13 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       final List<dynamic> projectFiles = [];
       bool hasUnpackedNestedArchive = false;
 
-      if (selectedFile.path.toLowerCase().endsWith('.rar')) {
+      if (lowSelected.endsWith('.xls') || lowSelected.endsWith('.xlsx')) {
+        projectFiles.add({
+          'name': archiveName,
+          'bytes': await selectedFile.readAsBytes(),
+          'savedPath': selectedFile.path,
+        });
+      } else if (lowSelected.endsWith('.rar')) {
         final ok = await _extractExternalArchiveToDir(selectedFile.path, sessionUnpackDir);
         if (ok && sessionUnpackDir.existsSync()) {
           for (final entity in sessionUnpackDir.listSync(recursive: true)) {
@@ -1023,7 +1096,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         if (upper.endsWith('.RAR') || upper.endsWith('.7Z')) {
           role = 'Нераспакованный RAR (установите WinRAR/7-Zip)';
         } else if (upper.endsWith('.XLS') || upper.endsWith('.XLSX')) {
-          role = 'Бланк заказа / спецификация (читается автоматически)';
+          role = 'Бланк заказа / КП (читается автоматически)';
           importantDoc = true;
           foundExcelPath ??= savedPath;
         } else if (upper.endsWith('.PNG') || upper.endsWith('.JPG') || upper.endsWith('.JPEG') || upper.endsWith('.PDF')) {
@@ -1170,7 +1243,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
           ? (firstBoard['layers'] as num).toInt()
           : (copperLayers > 0 ? copperLayers : 2);
 
-      final projectTitle = archiveName.replaceAll(RegExp(r'\.(zip|rar)$', caseSensitive: false), '');
+      final projectTitle = archiveName.replaceAll(RegExp(r'\.(zip|rar|xls|xlsx)$', caseSensitive: false), '');
 
       final resultObj = GerberAnalysisResult(
         archiveName: archiveName,
@@ -1230,18 +1303,18 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       });
 
       if (parsedBoards.length > 1) {
-        _showSnack('В бланке найдено ${parsedBoards.length} плат (срочность: $_urgency) — переключайтесь сверху!');
+        _showSnack('В документе найдено ${parsedBoards.length} позиций (срочность: $_urgency) — переключайтесь сверху!');
       } else if (firstBoard != null) {
         _showSnack('Параметры загружены из Excel (срочность: $_urgency)!');
       } else if (hasUnpackedNestedArchive) {
         _showSnack('Не удалось распаковать вложенный .RAR — укажите X и Y вручную.');
       } else if (detectedWidth == null) {
-        _showSnack('Архив загружен, но контур не распознан — введите X и Y вручную для расчёта цены.');
+        _showSnack('Файл загружен, но контур не распознан — введите X и Y вручную для расчёта цены.');
       } else {
         _showSnack('Проект $archiveName проанализирован и рассчитан!');
       }
     } catch (e) {
-      _showSnack('Ошибка чтения архива: $e');
+      _showSnack('Ошибка чтения файла: $e');
     }
   }
 
@@ -1349,7 +1422,6 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     final thick = double.tryParse(_thickness) ?? 1.5;
     final notesLow = _notesController.text.toLowerCase();
 
-    // Проверка попарного прессования и нестандартного стека МПП
     if (_hasCustomStackOrPressing(_notesController.text, _layersCount)) {
       final pairMatch = RegExp(r'(\d+[.,]\d+)\s*[xхXХ*]\s*2').firstMatch(notesLow);
       String stackDetail = 'Требуется согласование с технологом и контроль симметрии заготовок МПП.';
@@ -1502,11 +1574,11 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     final w = double.tryParse(_widthController.text.replaceAll(',', '.')) ?? 0;
     final h = double.tryParse(_heightController.text.replaceAll(',', '.')) ?? 0;
     final qty = int.tryParse(_qtyController.text.trim()) ?? 10;
-    final singleDm2 = (w * h) / 10000.0;
+    final singleDm2 = _calcEffectiveSingleDm2(w, h);
     final totalDm2 = singleDm2 * math.max(qty, 1);
 
-    final baseP = double.tryParse(_basePriceDm2Controller.text.replaceAll(',', '.')) ?? 528.0;
-    final setupP = double.tryParse(_setupFeeController.text.replaceAll(',', '.')) ?? 2400.0;
+    final baseP = double.tryParse(_basePriceDm2Controller.text.replaceAll(',', '.')) ?? 466.0;
+    final setupP = double.tryParse(_setupFeeController.text.replaceAll(',', '.')) ?? 2406.0;
     final pureSum = (totalDm2 * baseP) + setupP;
     final vatSum = pureSum * 0.22;
     final totalSumWithVat = pureSum + vatSum;
@@ -1523,11 +1595,11 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     }
     sb.writeln('Обозначение платы: ${_orderNameController.text.trim().isEmpty ? "Без названия" : _orderNameController.text.trim()}');
     sb.writeln('Тип / срочность:   $_orderType • $_urgency');
-    sb.writeln('Тираж:             $qty шт. (площадь 1 шт: ${singleDm2.toStringAsFixed(3)} дм², партия: ${totalDm2.toStringAsFixed(2)} дм²)');
+    sb.writeln('Тираж:             $qty шт. (расч. площадь 1 шт: ${singleDm2.toStringAsFixed(3)} дм², партия: ${totalDm2.toStringAsFixed(2)} дм²)');
     sb.writeln('--------------------------------------------------------------------');
     sb.writeln('РАСЧЕТ СТОИМОСТИ:');
     if (_webPriceResult != null) {
-      sb.writeln('• Расчет с сайта pselectro.ru: $_webPriceResult');
+      sb.writeln('• Расчет с сайта / КП: $_webPriceResult');
     }
     sb.writeln('• Локально без НДС: ${pureSum.toStringAsFixed(2)} руб.');
     sb.writeln('• НДС (22%):        ${vatSum.toStringAsFixed(2)} руб.');
@@ -1586,7 +1658,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     final baseTitle = _analysis?.projectTitle ?? 'Комплект_плат';
     sb.writeln('====================================================================');
     sb.writeln('СВОДНОЕ ТЗ ПО ВСЕМ ПЛАТАМ ЗАКАЗА (ООО «ЭЛЕКТРОконнект»)');
-    sb.writeln('Проект: $baseTitle • Позиций в бланке: ${_blankBoardsList.length}');
+    sb.writeln('Проект: $baseTitle • Позиций в документе: ${_blankBoardsList.length}');
     sb.writeln('====================================================================');
     sb.writeln('Дата формирования: ${DateTime.now().toString().substring(0, 16)}');
     if (_customerController.text.trim().isNotEmpty) {
@@ -1651,7 +1723,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         hasCustomStack: hasCustom,
       );
 
-      final singleDm2 = (w * h) / 10000.0;
+      final singleDm2 = _calcEffectiveSingleDm2(w, h);
       final totalDm2 = singleDm2 * math.max(qty, 1);
       final pureSum = (w > 0 && h > 0) ? ((totalDm2 * rates.dm2Rate) + rates.setupFee) : 0.0;
       final totalWithVat = pureSum * 1.22;
@@ -1661,7 +1733,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
 
       sb.writeln('--- ПОЗИЦИЯ ${i + 1}: $bName ---');
       sb.writeln('• Параметры: $oType ($urg); $layers сл; ${w.toStringAsFixed(1)}x${h.toStringAsFixed(1)}мм; $mat-$thickмм-$foilмкм; маска: $maskSide; марк: $silkSide; $fin');
-      sb.writeln('• Тираж:     $qty шт. (площадь партии: ${totalDm2.toStringAsFixed(2)} дм²)');
+      sb.writeln('• Тираж:     $qty шт. (расч. площадь партии: ${totalDm2.toStringAsFixed(2)} дм²)');
       sb.writeln('• Стоимость: ${totalWithVat.toStringAsFixed(2)} руб. с НДС (тариф ${rates.dm2Rate.toStringAsFixed(0)} р/дм² + подготовка ${rates.setupFee.toStringAsFixed(0)} р)');
       if (notesStr.isNotEmpty) {
         sb.writeln('• Примечания: $notesStr');
@@ -1671,8 +1743,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
 
     sb.writeln('====================================================================');
     sb.writeln('ИТОГО ПО ВСЕМУ КОМПЛЕКТУ (${_blankBoardsList.length} поз.):');
-    sb.writeln('• Общая площадь партии: ${grandTotalAreaDm2.toStringAsFixed(2)} дм²');
-    sb.writeln('• ОБЩАЯ СУММА С НДС:    ${grandTotalWithVat.toStringAsFixed(2)} руб.');
+    sb.writeln('• Общая расчётная площадь: ${grandTotalAreaDm2.toStringAsFixed(2)} дм²');
+    sb.writeln('• ОБЩАЯ СУММА С НДС (22%): ${grandTotalWithVat.toStringAsFixed(2)} руб.');
     sb.writeln('====================================================================');
 
     final dirPath = _analysis?.archiveDir ?? (await getApplicationDocumentsDirectory()).path;
@@ -1687,12 +1759,12 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     final title = _orderNameController.text.trim().isEmpty ? 'платы' : _orderNameController.text.trim();
     final qty = _qtyController.text.trim();
     final priceLine = _webPriceResult != null
-        ? '• Стоимость партии по калькулятору сайта: $_webPriceResult'
+        ? '• Стоимость партии по расчёту сайта / КП: $_webPriceResult'
         : '• Предварительная стоимость партии с учетом НДС 22% (срочность: $_urgency): ${totalWithVat.toStringAsFixed(2)} руб.';
 
     final text = 'Здравствуйте!\n'
         'Благодарим за обращение на завод «ЭЛЕКТРОконнект».\n\n'
-        'По результатам проверки производственных файлов проекта «$title» ($qty шт., общая площадь партии: ${totalDm2.toStringAsFixed(2)} дм²):\n'
+        'По результатам проверки производственных файлов проекта «$title» ($qty шт., расчётная площадь партии: ${totalDm2.toStringAsFixed(2)} дм²):\n'
         '• Габариты и класс точности соответствуют стандартам технологического регламента.\n'
         '$priceLine\n\n'
         'Ждем ваше подтверждение запуска в производство!\n\n'
@@ -1772,11 +1844,11 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     final h = double.tryParse(_heightController.text.replaceAll(',', '.')) ?? 0;
     final qty = int.tryParse(_qtyController.text.trim()) ?? 10;
     final hasValidDimensions = w > 0 && h > 0;
-    final singleAreaDm2 = hasValidDimensions ? (w * h) / 10000.0 : 0.0;
+    final singleAreaDm2 = _calcEffectiveSingleDm2(w, h);
     final totalAreaDm2 = singleAreaDm2 * math.max(qty, 1);
 
-    final baseP = double.tryParse(_basePriceDm2Controller.text.replaceAll(',', '.')) ?? 528.0;
-    final setupP = double.tryParse(_setupFeeController.text.replaceAll(',', '.')) ?? 2400.0;
+    final baseP = double.tryParse(_basePriceDm2Controller.text.replaceAll(',', '.')) ?? 466.0;
+    final setupP = double.tryParse(_setupFeeController.text.replaceAll(',', '.')) ?? 2406.0;
     final pureSum = hasValidDimensions ? ((totalAreaDm2 * baseP) + setupP) : 0.0;
     final vatSum = pureSum * 0.22;
     final totalSumWithVat = pureSum + vatSum;
@@ -1803,7 +1875,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text('ЭЛЕКТРОконнект — CAM & DFM Контроль (Кувезенков А.А.)', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-                Text('Автопарсинг бланков XLS/XLSX (включая красный шрифт), Gerber, RAR, ZIP, PCB', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                Text('Автопарсинг бланков и КП XLS/XLSX, Gerber, RAR, ZIP, PCB • Прайс завода', style: TextStyle(fontSize: 11, color: Colors.grey)),
               ],
             ),
           ],
@@ -1836,13 +1908,13 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              _analysis != null ? 'Проект: ${_analysis!.archiveName}' : 'Загрузите архив с файлами платы (.zip / .rar)',
+                              _analysis != null ? 'Проект: ${_analysis!.archiveName}' : 'Загрузите архив платы (.zip / .rar) или бланк / КП (.xls / .xlsx)',
                               style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                             ),
                             Text(
                               _analysis != null
                                   ? 'Найдено файлов: ${_analysis!.layers.length} • Отверстий: ${_analysis!.totalHoles} • Папка: ${_analysis!.archiveDir}'
-                                  : 'Автоматически читает бланки заказов Excel (.XLS/.XLSX), Gerber, P-CAD и вложенные .RAR',
+                                  : 'Автоматически читает заявки, готовые КП завода, Gerber, P-CAD и вложенные .RAR',
                               style: TextStyle(fontSize: 12.5, color: _subtleText),
                             ),
                           ],
@@ -1867,7 +1939,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
                         icon: const Icon(Icons.upload_file_rounded, size: 20),
-                        label: const Text('ВЫБРАТЬ АРХИВ', style: TextStyle(fontWeight: FontWeight.bold)),
+                        label: const Text('ВЫБРАТЬ ФАЙЛ / АРХИВ', style: TextStyle(fontWeight: FontWeight.bold)),
                         onPressed: _pickAndAnalyzeZip,
                       ),
                     ],
@@ -1888,7 +1960,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                       runSpacing: 8,
                       crossAxisAlignment: WrapCrossAlignment.center,
                       children: [
-                        Text('В бланке ${_blankBoardsList.length} плат:', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                        Text('В документе ${_blankBoardsList.length} поз.:', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
                         for (int i = 0; i < _blankBoardsList.length; i++)
                           ChoiceChip(
                             label: Text(
@@ -1997,7 +2069,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                   Row(
                                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                     children: [
-                                      Text('Площадь 1 шт: ${singleAreaDm2.toStringAsFixed(3)} дм²', style: const TextStyle(fontSize: 12.5)),
+                                      Text('Расч. площадь 1 шт: ${singleAreaDm2.toStringAsFixed(3)} дм²', style: const TextStyle(fontSize: 12.5)),
                                       Text('Партия: ${totalAreaDm2.toStringAsFixed(2)} дм²', style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold)),
                                     ],
                                   ),
@@ -2024,7 +2096,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     Row(
                                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                       children: [
-                                        const Text('Цена напрямую с сайта pselectro.ru:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF10B981))),
+                                        const Text('Цена с сайта / из КП завода:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF10B981))),
                                         Text(
                                           _webPriceResult ?? '...',
                                           style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF10B981)),
@@ -2240,8 +2312,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     ),
                                     child: Text(
                                       _blankBoardsList.length > 1
-                                          ? 'Из бланка заказа Excel загружено плат: ${_blankBoardsList.length} шт. (срочность: $_urgency). Переключайтесь между ними сверху!'
-                                          : 'Параметры (включая срочность «$_urgency», размеры X/Y, тираж, слои, покрытие и примечания) считаны из Excel!',
+                                          ? 'Из Excel загружено позиций: ${_blankBoardsList.length} шт. (срочность: $_urgency). Переключайтесь между ними сверху!'
+                                          : 'Параметры (срочность «$_urgency», размеры X/Y, тираж, слои, покрытие и примечания) считаны из Excel!',
                                       style: const TextStyle(fontSize: 12),
                                     ),
                                   ),
