@@ -24,7 +24,8 @@ class ElectroconnectCamApp extends StatefulWidget {
 }
 
 class _ElectroconnectCamAppState extends State<ElectroconnectCamApp> {
-  bool _isDark = true;
+  // По умолчанию светлая корпоративная тема в цветах сайта pselectro.ru (#002E63 и #F56600)
+  bool _isDark = false;
 
   @override
   void initState() {
@@ -34,7 +35,7 @@ class _ElectroconnectCamAppState extends State<ElectroconnectCamApp> {
 
   Future<void> _loadTheme() async {
     final prefs = await SharedPreferences.getInstance();
-    setState(() => _isDark = prefs.getBool('cam_dark_theme') ?? true);
+    setState(() => _isDark = prefs.getBool('cam_dark_theme') ?? false);
   }
 
   Future<void> _toggleTheme() async {
@@ -53,14 +54,14 @@ class _ElectroconnectCamAppState extends State<ElectroconnectCamApp> {
       theme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.light,
-        colorSchemeSeed: const Color(0xFF0284C7),
-        scaffoldBackgroundColor: const Color(0xFFF1F5F9),
+        colorSchemeSeed: const Color(0xFF002E63),
+        scaffoldBackgroundColor: const Color(0xFFF3F6FA),
       ),
       darkTheme: ThemeData(
         useMaterial3: true,
         brightness: Brightness.dark,
-        colorSchemeSeed: const Color(0xFF38BDF8),
-        scaffoldBackgroundColor: const Color(0xFF090D16),
+        colorSchemeSeed: const Color(0xFF002E63),
+        scaffoldBackgroundColor: const Color(0xFF0A101D),
       ),
       home: CamWorkspaceScreen(isDark: _isDark, onToggleTheme: _toggleTheme),
     );
@@ -158,9 +159,41 @@ class CamWorkspaceScreen extends StatefulWidget {
 }
 
 class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
+  // Фирменные цвета сайта pselectro.ru
+  static const Color ecNavy = Color(0xFF002E63);
+  static const Color ecNavyLight = Color(0xFF0D478A);
+  static const Color ecOrange = Color(0xFFF56600);
+
   GerberAnalysisResult? _analysis;
   List _blankBoardsList = [];
   int _selectedBoardIdx = 0;
+
+  // Настраиваемые тарифы прайс-листа завода (сохраняются локально)
+  Map<String, double> _tariffConfig = {
+    'l1': 290.0,
+    'l2': 370.0,
+    'l4': 650.0,
+    'l6': 850.0,
+    'l8': 1090.0,
+    'l10': 1395.0,
+    'l12': 1665.0,
+    'l14': 1958.0,
+    'l16': 2213.0,
+    'l18': 2513.0,
+    'al': 465.0,
+    'mask2': 49.0,
+    'silk1': 20.0,
+    'gold': 75.0,
+    'tin': 55.0,
+    'foil50': 30.0,
+    'foil70': 48.0,
+    'foil105': 70.0,
+    'setupLayer': 300.0,
+    'setupSilk': 600.0,
+    'colorMaskCoeff': 2.0,
+    'expressMult': 1.50,
+    'superExpressMult': 2.00,
+  };
 
   final TextEditingController _customerController = TextEditingController();
   final TextEditingController _orderNameController = TextEditingController();
@@ -172,7 +205,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   final TextEditingController _notesController = TextEditingController();
   final TextEditingController _managerController = TextEditingController();
 
-  final TextEditingController _basePriceDm2Controller = TextEditingController(text: '439.0');
+  final TextEditingController _basePriceDm2Controller = TextEditingController(text: '459.0');
   final TextEditingController _setupFeeController = TextEditingController(text: '1800.0');
   bool _manualPriceOverride = false;
 
@@ -195,16 +228,218 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   bool _electroTest = true;
 
   Color get _cardBg => widget.isDark ? const Color(0xFF111827) : Colors.white;
-  Color get _borderCol => widget.isDark ? const Color(0xFF1F2937) : const Color(0xFFE2E8F0);
-  Color get _subtleText => widget.isDark ? const Color(0xFF94A3B8) : const Color(0xFF64748B);
+  Color get _borderCol => widget.isDark ? const Color(0xFF1F2937) : const Color(0xFFD5DFEC);
+  Color get _subtleText => widget.isDark ? const Color(0xFF94A3B8) : const Color(0xFF475569);
+
+  @override
+  void initState() {
+    super.initState();
+    _loadTariffConfig();
+  }
+
+  Future<void> _loadTariffConfig() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString('ec_tariff_config_v1');
+    if (raw != null) {
+      try {
+        final decoded = jsonDecode(raw) as Map;
+        setState(() {
+          for (final entry in decoded.entries) {
+            final k = entry.key.toString();
+            final v = (entry.value as num).toDouble();
+            if (_tariffConfig.containsKey(k)) {
+              _tariffConfig[k] = v;
+            }
+          }
+          _recalculateTariffFromSpecs(force: true);
+        });
+      } catch (_) {}
+    } else {
+      _recalculateTariffFromSpecs(force: true);
+    }
+  }
+
+  Future<void> _saveTariffConfig() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('ec_tariff_config_v1', jsonEncode(_tariffConfig));
+  }
 
   void _showSnack(String text) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(text, style: const TextStyle(fontSize: 14)),
+        backgroundColor: ecNavy,
+        content: Text(text, style: const TextStyle(fontSize: 14, color: Colors.white)),
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+      ),
+    );
+  }
+
+  Future<void> _openTariffEditorDialog() async {
+    final Map<String, TextEditingController> ctrls = {};
+    for (final entry in _tariffConfig.entries) {
+      ctrls[entry.key] = TextEditingController(text: entry.value.toString());
+    }
+
+    Widget numBox(String key, String title) {
+      return SizedBox(
+        width: 190,
+        child: TextField(
+          controller: ctrls[key],
+          keyboardType: TextInputType.number,
+          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+          decoration: InputDecoration(
+            labelText: title,
+            labelStyle: const TextStyle(fontSize: 12.5),
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(8)),
+            contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+          ),
+        ),
+      );
+    }
+
+    await showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(6),
+              decoration: BoxDecoration(color: ecNavy, borderRadius: BorderRadius.circular(8)),
+              child: const Icon(Icons.price_change_rounded, color: Colors.white, size: 22),
+            ),
+            const SizedBox(width: 10),
+            const Expanded(
+              child: Text(
+                'Настройка тарифов прайса ООО «ЭЛЕКТРОконнект» (без НДС)',
+                style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+        content: SizedBox(
+          width: 840,
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Базовые ставки за 1 дм² по слойности (руб.):', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    numBox('l1', '1 слой (ОПП), р/дм²'),
+                    numBox('l2', '2 слоя (ДПП), р/дм²'),
+                    numBox('l4', '4 слоя (МПП), р/дм²'),
+                    numBox('l6', '6 слоёв (МПП), р/дм²'),
+                    numBox('l8', '8 слоёв (МПП), р/дм²'),
+                    numBox('l10', '10 слоёв (МПП), р/дм²'),
+                    numBox('l12', '12 слоёв (МПП), р/дм²'),
+                    numBox('l14', '14 слоёв (МПП), р/дм²'),
+                    numBox('l16', '16 слоёв (МПП), р/дм²'),
+                    numBox('l18', '18 слоёв (МПП), р/дм²'),
+                    numBox('al', 'Алюминий (AL), р/дм²'),
+                  ],
+                ),
+                const Divider(height: 24),
+                const Text('Доплаты за покрытие, маску, маркировку и фольгу (руб./дм²):', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    numBox('mask2', 'Маска 2 стороны, р/дм²'),
+                    numBox('silk1', 'Маркировка 1 ст., р/дм²'),
+                    numBox('gold', 'Иммерс. золото, р/дм²'),
+                    numBox('tin', 'Иммерс. олово, р/дм²'),
+                    numBox('foil50', 'Фольга 50 мкм, +р/дм²'),
+                    numBox('foil70', 'Фольга 70 мкм, +р/дм²'),
+                    numBox('foil105', 'Фольга 105 мкм, +р/дм²'),
+                  ],
+                ),
+                const Divider(height: 24),
+                const Text('Подготовка производства и коэффициенты:', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 10,
+                  runSpacing: 10,
+                  children: [
+                    numBox('setupLayer', 'Подготовка 1 слоя, руб.'),
+                    numBox('setupSilk', 'Подготовка марк., руб.'),
+                    numBox('colorMaskCoeff', 'Коэф. цветной маски'),
+                    numBox('expressMult', 'Коэф. Ускоренный (Экспресс)'),
+                    numBox('superExpressMult', 'Коэф. Суперэкспресс'),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              setState(() {
+                _tariffConfig = {
+                  'l1': 290.0,
+                  'l2': 370.0,
+                  'l4': 650.0,
+                  'l6': 850.0,
+                  'l8': 1090.0,
+                  'l10': 1395.0,
+                  'l12': 1665.0,
+                  'l14': 1958.0,
+                  'l16': 2213.0,
+                  'l18': 2513.0,
+                  'al': 465.0,
+                  'mask2': 49.0,
+                  'silk1': 20.0,
+                  'gold': 75.0,
+                  'tin': 55.0,
+                  'foil50': 30.0,
+                  'foil70': 48.0,
+                  'foil105': 70.0,
+                  'setupLayer': 300.0,
+                  'setupSilk': 600.0,
+                  'colorMaskCoeff': 2.0,
+                  'expressMult': 1.50,
+                  'superExpressMult': 2.00,
+                };
+                _manualPriceOverride = false;
+                _recalculateTariffFromSpecs(force: true);
+              });
+              _saveTariffConfig();
+              Navigator.pop(ctx);
+              _showSnack('Тарифы сброшены на заводские значения 2026 года.');
+            },
+            child: const Text('Сбросить по умолчанию'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Отмена'),
+          ),
+          ElevatedButton.icon(
+            style: ElevatedButton.styleFrom(backgroundColor: ecOrange, foregroundColor: Colors.white),
+            icon: const Icon(Icons.check_rounded, size: 18),
+            label: const Text('Применить и сохранить', style: TextStyle(fontWeight: FontWeight.bold)),
+            onPressed: () {
+              setState(() {
+                for (final entry in ctrls.entries) {
+                  final parsed = double.tryParse(entry.value.text.replaceAll(',', '.'));
+                  if (parsed != null && parsed >= 0) {
+                    _tariffConfig[entry.key] = parsed;
+                  }
+                }
+                _manualPriceOverride = false;
+                _recalculateTariffFromSpecs(force: true);
+              });
+              _saveTariffConfig();
+              Navigator.pop(ctx);
+              _showSnack('Новые цены прайса применены ко всем расчётам!');
+            },
+          ),
+        ],
       ),
     );
   }
@@ -228,71 +463,74 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     double baseBoardDm2;
     switch (layers) {
       case 1:
-        baseBoardDm2 = 290.0;
+        baseBoardDm2 = _tariffConfig['l1'] ?? 290.0;
         break;
       case 2:
-        baseBoardDm2 = 370.0;
+        baseBoardDm2 = _tariffConfig['l2'] ?? 370.0;
         break;
       case 4:
-        baseBoardDm2 = 650.0;
+        baseBoardDm2 = _tariffConfig['l4'] ?? 650.0;
         break;
       case 6:
-        baseBoardDm2 = 850.0;
+        baseBoardDm2 = _tariffConfig['l6'] ?? 850.0;
         break;
       case 8:
-        baseBoardDm2 = 1090.0;
+        baseBoardDm2 = _tariffConfig['l8'] ?? 1090.0;
         break;
       case 10:
-        baseBoardDm2 = 1395.0;
+        baseBoardDm2 = _tariffConfig['l10'] ?? 1395.0;
         break;
       case 12:
-        baseBoardDm2 = 1665.0;
+        baseBoardDm2 = _tariffConfig['l12'] ?? 1665.0;
         break;
       case 14:
-        baseBoardDm2 = 1958.0;
+        baseBoardDm2 = _tariffConfig['l14'] ?? 1958.0;
         break;
       case 16:
-        baseBoardDm2 = 2213.0;
+        baseBoardDm2 = _tariffConfig['l16'] ?? 2213.0;
         break;
       default:
-        baseBoardDm2 = 2513.0 + (layers - 18) * 150.0;
+        baseBoardDm2 = (_tariffConfig['l18'] ?? 2513.0) + (layers - 18) * 150.0;
         break;
     }
 
     if (material == 'Алюминий') {
-      baseBoardDm2 = 465.0;
+      baseBoardDm2 = _tariffConfig['al'] ?? 465.0;
     } else if (material == 'FR4 Tg170') {
       baseBoardDm2 += 27.0 * layers;
     } else if (material == 'Rogers') {
       baseBoardDm2 *= 2.50;
     }
 
+    final mask2Rate = _tariffConfig['mask2'] ?? 49.0;
+    final silk1Rate = _tariffConfig['silk1'] ?? 20.0;
+
     double dm2Addons = 0.0;
     if (maskSide == 'С двух сторон') {
-      dm2Addons += 49.0;
+      dm2Addons += mask2Rate;
     } else if (maskSide.startsWith('С одной стороны')) {
-      dm2Addons += 25.0;
+      dm2Addons += (mask2Rate * 0.5);
     }
 
     if (silkSide == 'С двух сторон') {
-      dm2Addons += 40.0;
+      dm2Addons += (silk1Rate * 2.0);
     } else if (silkSide.startsWith('С одной стороны')) {
-      dm2Addons += 20.0;
+      dm2Addons += silk1Rate;
     }
 
     final foilInt = int.tryParse(foil) ?? 18;
     if (foilInt >= 105) {
-      dm2Addons += 70.0;
+      dm2Addons += _tariffConfig['foil105'] ?? 70.0;
     } else if (foilInt >= 70) {
-      dm2Addons += 48.0;
+      dm2Addons += _tariffConfig['foil70'] ?? 48.0;
     } else if (foilInt >= 50) {
-      dm2Addons += 30.0;
+      dm2Addons += _tariffConfig['foil50'] ?? 30.0;
     }
 
     if (finish == 'Иммерсионное золото') {
-      dm2Addons += 75.0;
+      dm2Addons += _tariffConfig['gold'] ?? 75.0;
     } else if (finish == 'Иммерсионное олово') {
-      dm2Addons += 55.0;
+      dm2Addons += _tariffConfig['tin'] ?? 55.0;
     }
 
     final notesLow = notesText.toLowerCase();
@@ -307,7 +545,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
 
     double maxCoeff = 1.0;
     if (maskColor != 'Зеленая' && maskSide != 'Без маски') {
-      maxCoeff = math.max(maxCoeff, 2.0);
+      maxCoeff = math.max(maxCoeff, _tariffConfig['colorMaskCoeff'] ?? 2.0);
     }
     if (hasEpoxyFill) {
       maxCoeff = math.max(maxCoeff, 1.5);
@@ -330,9 +568,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     double setupFee = 0.0;
     if (orderType != 'Повтор') {
       int maskLayers = maskSide == 'С двух сторон' ? 2 : (maskSide.startsWith('С одной стороны') ? 1 : 0);
-      setupFee = (layers + maskLayers) * 300.0;
+      setupFee = (layers + maskLayers) * (_tariffConfig['setupLayer'] ?? 300.0);
       if (silkSide != 'Без маркировки') {
-        setupFee += 600.0;
+        setupFee += (_tariffConfig['setupSilk'] ?? 600.0);
       }
       if (hasViaMaskPlug) {
         setupFee += 500.0;
@@ -346,9 +584,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     }
 
     if (urgency == 'Экспресс') {
-      dm2Rate *= 1.50;
+      dm2Rate *= (_tariffConfig['expressMult'] ?? 1.50);
     } else if (urgency == 'СуперЭкспресс') {
-      dm2Rate *= 2.00;
+      dm2Rate *= (_tariffConfig['superExpressMult'] ?? 2.00);
     }
 
     return (dm2Rate: dm2Rate, setupFee: setupFee);
@@ -428,6 +666,10 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     current['contour'] = _contour;
     current['electro_test'] = _electroTest;
     current['customer'] = _customerController.text.trim();
+    if (_manualPriceOverride) {
+      current['manual_dm2_rate'] = double.tryParse(_basePriceDm2Controller.text.replaceAll(',', '.'));
+      current['manual_setup_fee'] = double.tryParse(_setupFeeController.text.replaceAll(',', '.'));
+    }
     _blankBoardsList[_selectedBoardIdx] = current;
   }
 
@@ -630,7 +872,15 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     _manualPriceOverride = false;
     _webPriceResult = null;
     _webPriceDetails = null;
-    _recalculateTariffFromSpecs(force: true);
+    if (board['manual_dm2_rate'] != null) {
+      _manualPriceOverride = true;
+      _basePriceDm2Controller.text = (board['manual_dm2_rate'] as num).toDouble().toStringAsFixed(1);
+      if (board['manual_setup_fee'] != null) {
+        _setupFeeController.text = (board['manual_setup_fee'] as num).toDouble().toStringAsFixed(1);
+      }
+    } else {
+      _recalculateTariffFromSpecs(force: true);
+    }
 
     if (board['kp_price_with_vat'] != null) {
       final kpSum = (board['kp_price_with_vat'] as num).toDouble();
@@ -1724,7 +1974,6 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     final notesText = _notesController.text;
     final notesLow = notesText.toLowerCase();
 
-    // 1. Выделенные красным / жирным / цветом ячейки в бланке Excel
     final highlightedParts = notesText
         .split(';')
         .map((e) => e.trim())
@@ -1742,7 +1991,6 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       ));
     }
 
-    // 2. Дополнительные документы в архиве (чертежи стека, ламели, PDF, ReadMe)
     if (_analysis != null && _analysis!.extraProjectDocs.isNotEmpty) {
       checks.add(DfmCheckItem(
         title: 'В архиве есть доп. документы/чертежи (${_analysis!.extraProjectDocs.length} шт.) — обязательно проверьте!',
@@ -1875,8 +2123,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
 
     if (_maskColor != 'Зеленая' && _maskSide != 'Без маски') {
       checks.add(DfmCheckItem(
-        title: 'Цветная маска ($_maskColor): коэф. 2.0 и перемычка ≥ 150 мкм',
-        detail: 'По прайсу 2026 цветная LPI маска имеет коэф. 2.0; минимальная ширина перемычки маски 0.15 мм.',
+        title: 'Цветная маска ($_maskColor): коэф. ${_tariffConfig['colorMaskCoeff'] ?? 2.0} и перемычка ≥ 150 мкм',
+        detail: 'По прайсу 2026 цветная LPI маска имеет повышенный коэффициент; минимальная ширина перемычки маски 0.15 мм.',
         level: 'warn',
       ));
     }
@@ -1966,7 +2214,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         final effW = w > 0 ? w : 50.0;
         final effH = h > 0 ? h : 50.0;
 
-        final rates = _computeRatesForSpecs(
+        final autoRates = _computeRatesForSpecs(
           layers: layers,
           material: mat,
           foil: foil,
@@ -1981,9 +2229,12 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
           notesText: notesStr,
         );
 
+        final dm2Rate = (b['manual_dm2_rate'] as num?)?.toDouble() ?? autoRates.dm2Rate;
+        final setupFee = (b['manual_setup_fee'] as num?)?.toDouble() ?? autoRates.setupFee;
+
         final singleDm2 = _calcEffectiveSingleDm2(effW, effH);
         final totalDm2 = singleDm2 * math.max(qty, 1);
-        final pureSum = (totalDm2 * rates.dm2Rate) + rates.setupFee;
+        final pureSum = (totalDm2 * dm2Rate) + setupFee;
         final unitPriceNoVat = pureSum / math.max(qty, 1);
         final vatSum = pureSum * 0.22;
         final totalWithVat = pureSum + vatSum;
@@ -2022,7 +2273,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       final effH = h > 0 ? h : 50.0;
       final singleDm2 = _calcEffectiveSingleDm2(effW, effH);
       final totalDm2 = singleDm2 * math.max(qty, 1);
-      final baseP = double.tryParse(_basePriceDm2Controller.text.replaceAll(',', '.')) ?? 439.0;
+      final baseP = double.tryParse(_basePriceDm2Controller.text.replaceAll(',', '.')) ?? 459.0;
       final setupP = double.tryParse(_setupFeeController.text.replaceAll(',', '.')) ?? 1800.0;
       final pureSum = (totalDm2 * baseP) + setupP;
       final unitPriceNoVat = pureSum / math.max(qty, 1);
@@ -2082,6 +2333,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       ''');
     }
 
+    // Точные фирменные цвета из PDF-шаблона КП-2054 (#000080 / #022D60)
     final htmlDoc = '''<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -2097,27 +2349,28 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     background: #ffffff;
   }
   .header-table { width: 100%; border-collapse: collapse; margin-bottom: 10px; }
-  .logo-wrap { display: inline-flex; align-items: center; gap: 6px; }
+  .logo-wrap { display: inline-flex; align-items: center; gap: 7px; }
   .logo-icon {
     width: 26px; height: 26px; border-radius: 50%;
-    border: 3.5px solid #1b75bc; border-right-color: transparent;
+    border: 3.5px solid #022D60; border-right-color: transparent;
     display: inline-block; position: relative;
   }
   .logo-icon::after {
     content: ""; position: absolute; right: -4px; top: 8px;
-    width: 12px; height: 3.5px; background: #1b75bc;
+    width: 12px; height: 3.5px; background: #022D60;
   }
-  .brand-blue { font-size: 23pt; font-weight: bold; color: #1b75bc; letter-spacing: -0.5px; }
-  .brand-black { font-size: 23pt; font-weight: normal; color: #111111; letter-spacing: -0.5px; }
-  .sub-brand { font-size: 12.5pt; font-weight: bold; color: #1b75bc; text-align: right; letter-spacing: 0.3px; }
-  .contacts { font-size: 10pt; color: #111111; margin-top: 2px; }
-  .customer-line { margin: 14px 0 10px 0; font-size: 11.5pt; }
+  .brand-blue { font-size: 23pt; font-weight: bold; color: #022D60; letter-spacing: -0.5px; }
+  .brand-dark { font-size: 23pt; font-weight: normal; color: #000080; letter-spacing: -0.5px; }
+  .sub-brand { font-size: 12pt; font-weight: bold; color: #000080; text-align: right; letter-spacing: 0.3px; }
+  .contacts { font-size: 10pt; color: #000080; margin-top: 2px; }
+  .customer-line { margin: 14px 0 10px 0; font-size: 11.5pt; color: #000000; }
   .customer-line b { font-weight: bold; }
   .customer-val { margin-left: 18px; }
   .title-kp {
     text-align: center;
     font-size: 13pt;
     font-weight: bold;
+    color: #000000;
     margin: 14px 0 12px 0;
   }
   table.main {
@@ -2125,9 +2378,10 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     border-collapse: collapse;
     margin-bottom: 12px;
     font-size: 10pt;
+    color: #000000;
   }
   table.main th {
-    border: 1px solid #888888;
+    border: 1px solid #000000;
     background-color: #ffffff;
     font-weight: bold;
     text-align: center;
@@ -2135,12 +2389,12 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     line-height: 1.2;
   }
   table.main td {
-    border: 1px solid #888888;
+    border: 1px solid #000000;
     padding: 4px 6px;
     vertical-align: middle;
   }
   table.main tr.item-top td.item-title {
-    border-bottom: 1px solid #cccccc;
+    border-bottom: 1px solid #666666;
     font-weight: normal;
     padding-top: 5px;
     padding-bottom: 4px;
@@ -2148,7 +2402,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   table.main tr.item-bot td.spec {
     border-top: none;
     font-size: 9.5pt;
-    color: #111111;
+    color: #000000;
     padding-top: 4px;
     padding-bottom: 5px;
   }
@@ -2180,6 +2434,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   }
   .footer-sign span {
     margin-left: 36px;
+    font-family: "Times New Roman", Times, serif;
+    font-weight: bold;
   }
   @media print {
     .no-print { display: none !important; }
@@ -2188,7 +2444,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
 </style>
 </head>
 <body>
-<div class="no-print" style="background:#e0f2fe;padding:10px 14px;border-radius:8px;margin-bottom:14px;border:1px solid #0284c7;font-size:12px;">
+<div class="no-print" style="background:#eef4fb;padding:10px 14px;border-radius:8px;margin-bottom:14px;border:1px solid #002E63;font-size:12px;color:#002E63;">
   <b>Официальный бланк КП № $kpNum готов!</b> Нажмите <b>Ctrl + P</b> → <b>«Сохранить как PDF»</b> (альбомная ориентация, поля «По умолчанию»).
 </div>
 
@@ -2197,7 +2453,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     <td style="vertical-align:top;">
       <div class="logo-wrap">
         <span class="logo-icon"></span>
-        <span><span class="brand-blue">электро</span><span class="brand-black">коннект</span></span>
+        <span><span class="brand-blue">электро</span><span class="brand-dark">коннект</span></span>
       </div>
       <div class="contacts">Тел : &nbsp;+ (383) 3361001 , 3361003</div>
     </td>
@@ -2321,7 +2577,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     final singleDm2 = _calcEffectiveSingleDm2(w, h);
     final totalDm2 = singleDm2 * math.max(qty, 1);
 
-    final baseP = double.tryParse(_basePriceDm2Controller.text.replaceAll(',', '.')) ?? 439.0;
+    final baseP = double.tryParse(_basePriceDm2Controller.text.replaceAll(',', '.')) ?? 459.0;
     final setupP = double.tryParse(_setupFeeController.text.replaceAll(',', '.')) ?? 1800.0;
     final pureSum = (totalDm2 * baseP) + setupP;
     final vatSum = pureSum * 0.22;
@@ -2446,7 +2702,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
 
       final notesStr = (b['notes'] is List) ? (b['notes'] as List).join('; ') : '';
 
-      final rates = _computeRatesForSpecs(
+      final autoRates = _computeRatesForSpecs(
         layers: layers,
         material: mat,
         foil: foil,
@@ -2461,9 +2717,12 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         notesText: notesStr,
       );
 
+      final dm2Rate = (b['manual_dm2_rate'] as num?)?.toDouble() ?? autoRates.dm2Rate;
+      final setupFee = (b['manual_setup_fee'] as num?)?.toDouble() ?? autoRates.setupFee;
+
       final singleDm2 = _calcEffectiveSingleDm2(w, h);
       final totalDm2 = singleDm2 * math.max(qty, 1);
-      final pureSum = (w > 0 && h > 0) ? ((totalDm2 * rates.dm2Rate) + rates.setupFee) : 0.0;
+      final pureSum = (w > 0 && h > 0) ? ((totalDm2 * dm2Rate) + setupFee) : 0.0;
       final totalWithVat = pureSum * 1.22;
 
       grandTotalWithVat += totalWithVat;
@@ -2472,7 +2731,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       sb.writeln('--- ПОЗИЦИЯ ${i + 1}: $bName ---');
       sb.writeln('• Параметры: $oType ($urg); $layers сл; ${w.toStringAsFixed(1)}x${h.toStringAsFixed(1)}мм; $mat-$thickмм-$foilмкм; маска: $rawMs $maskCol; марк: $rawSs $silkCol; $fin');
       sb.writeln('• Тираж:     $qty шт. (расч. площадь партии: ${totalDm2.toStringAsFixed(2)} дм²)');
-      sb.writeln('• Стоимость: ${totalWithVat.toStringAsFixed(2)} руб. с НДС (тариф ${rates.dm2Rate.toStringAsFixed(0)} р/дм² + подготовка ${rates.setupFee.toStringAsFixed(0)} р)');
+      sb.writeln('• Стоимость: ${totalWithVat.toStringAsFixed(2)} руб. с НДС (тариф ${dm2Rate.toStringAsFixed(0)} р/дм² + подготовка ${setupFee.toStringAsFixed(0)} р)');
       if (notesStr.isNotEmpty) {
         sb.writeln('• Примечания: $notesStr');
       }
@@ -2549,11 +2808,12 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         hintText: hint,
         labelStyle: TextStyle(fontSize: 13.5, color: _subtleText, fontWeight: FontWeight.w500),
         hintStyle: TextStyle(fontSize: 13, color: _subtleText.withOpacity(0.6)),
-        prefixIcon: icon != null ? Icon(icon, size: 20) : null,
+        prefixIcon: icon != null ? Icon(icon, size: 20, color: ecNavyLight) : null,
         filled: true,
-        fillColor: widget.isDark ? const Color(0xFF182235) : const Color(0xFFF8FAFC),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(11), borderSide: BorderSide(color: _borderCol)),
-        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(11), borderSide: BorderSide(color: _borderCol)),
+        fillColor: widget.isDark ? const Color(0xFF182235) : const Color(0xFFF7FAFD),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: _borderCol)),
+        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: _borderCol)),
+        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: ecNavy, width: 1.6)),
         contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
       ),
     );
@@ -2574,9 +2834,10 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         labelText: label,
         labelStyle: TextStyle(fontSize: 13, color: _subtleText, fontWeight: FontWeight.w500),
         filled: true,
-        fillColor: widget.isDark ? const Color(0xFF182235) : const Color(0xFFF8FAFC),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(11), borderSide: BorderSide(color: _borderCol)),
-        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(11), borderSide: BorderSide(color: _borderCol)),
+        fillColor: widget.isDark ? const Color(0xFF182235) : const Color(0xFFF7FAFD),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: _borderCol)),
+        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: _borderCol)),
+        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: const BorderSide(color: ecNavy, width: 1.6)),
         contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 13),
       ),
       items: strItems
@@ -2594,7 +2855,6 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
 
   @override
   Widget build(BuildContext context) {
-    const accent = Color(0xFF0284C7);
     final w = double.tryParse(_widthController.text.replaceAll(',', '.')) ?? 0;
     final h = double.tryParse(_heightController.text.replaceAll(',', '.')) ?? 0;
     final qty = int.tryParse(_qtyController.text.trim()) ?? 10;
@@ -2602,7 +2862,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     final singleAreaDm2 = _calcEffectiveSingleDm2(w, h);
     final totalAreaDm2 = singleAreaDm2 * math.max(qty, 1);
 
-    final baseP = double.tryParse(_basePriceDm2Controller.text.replaceAll(',', '.')) ?? 439.0;
+    final baseP = double.tryParse(_basePriceDm2Controller.text.replaceAll(',', '.')) ?? 459.0;
     final setupP = double.tryParse(_setupFeeController.text.replaceAll(',', '.')) ?? 1800.0;
     final pureSum = hasValidDimensions ? ((totalAreaDm2 * baseP) + setupP) : 0.0;
     final vatSum = pureSum * 0.22;
@@ -2613,33 +2873,53 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        backgroundColor: _cardBg,
-        elevation: 0,
-        toolbarHeight: 64,
+        backgroundColor: ecNavy,
+        foregroundColor: Colors.white,
+        elevation: 2,
+        toolbarHeight: 68,
         title: Row(
           children: [
             Container(
               padding: const EdgeInsets.all(8),
               decoration: BoxDecoration(
-                color: accent.withOpacity(0.15),
+                color: Colors.white.withOpacity(0.14),
                 borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: ecOrange, width: 1.5),
               ),
-              child: const Icon(Icons.precision_manufacturing_rounded, color: accent, size: 24),
+              child: const Icon(Icons.precision_manufacturing_rounded, color: ecOrange, size: 25),
             ),
             const SizedBox(width: 14),
             const Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('ЭЛЕКТРОконнект — CAM & DFM Контроль (Кувезенков А.А.)', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
-                Text('Прайс от 25.09.2026 • Автопарсинг бланков v21.01, КП, PDF ТКП, Gerber • Генерация КП', style: TextStyle(fontSize: 12.5, color: Colors.grey)),
+                Row(
+                  children: [
+                    Text('ЭЛЕКТРО', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w900, color: Colors.white, letterSpacing: 0.4)),
+                    Text('коннект', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w400, color: Color(0xFF93C5FD), letterSpacing: 0.4)),
+                    Text(' — CAM & DFM Контроль (Кувезенков А.А.)', style: TextStyle(fontSize: 16.5, fontWeight: FontWeight.w600, color: Colors.white)),
+                  ],
+                ),
+                Text('РОССИЙСКИЙ ЗАВОД ПЕЧАТНЫХ ПЛАТ • pselectro.ru • Прайс 2026', style: TextStyle(fontSize: 12, color: Color(0xFFCBD5E1))),
               ],
             ),
           ],
         ),
         actions: [
+          TextButton.icon(
+            style: TextButton.styleFrom(
+              foregroundColor: Colors.white,
+              backgroundColor: Colors.white.withOpacity(0.12),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+            ),
+            icon: const Icon(Icons.price_change_outlined, color: ecOrange, size: 20),
+            label: const Text('Цены прайса', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold)),
+            onPressed: _openTariffEditorDialog,
+          ),
+          const SizedBox(width: 8),
           IconButton(
-            tooltip: widget.isDark ? 'Светлая тема' : 'Тёмная тема',
-            icon: Icon(widget.isDark ? Icons.light_mode_outlined : Icons.dark_mode_outlined, size: 24),
+            tooltip: widget.isDark ? 'Светлая тема (как на сайте)' : 'Тёмная тема',
+            icon: Icon(widget.isDark ? Icons.light_mode_outlined : Icons.dark_mode_outlined, size: 24, color: Colors.white),
             onPressed: widget.onToggleTheme,
           ),
           const SizedBox(width: 14),
@@ -2654,10 +2934,21 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
               children: [
                 Container(
                   padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(color: _cardBg, borderRadius: BorderRadius.circular(16), border: Border.all(color: _borderCol)),
+                  decoration: BoxDecoration(
+                    color: _cardBg,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: _borderCol),
+                    boxShadow: widget.isDark
+                        ? null
+                        : [BoxShadow(color: ecNavy.withOpacity(0.06), blurRadius: 12, offset: const Offset(0, 4))],
+                  ),
                   child: Row(
                     children: [
-                      const Icon(Icons.folder_zip_outlined, color: accent, size: 34),
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(color: ecNavy.withOpacity(0.1), borderRadius: BorderRadius.circular(12)),
+                        child: Icon(Icons.folder_zip_outlined, color: widget.isDark ? const Color(0xFF60A5FA) : ecNavy, size: 32),
+                      ),
                       const SizedBox(width: 16),
                       Expanded(
                         child: Column(
@@ -2680,20 +2971,22 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                       const SizedBox(width: 12),
                       OutlinedButton.icon(
                         style: OutlinedButton.styleFrom(
+                          foregroundColor: widget.isDark ? Colors.white : ecNavy,
+                          side: BorderSide(color: widget.isDark ? Colors.white24 : ecNavy, width: 1.4),
                           padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 17),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                         ),
                         icon: const Icon(Icons.refresh_rounded, size: 20),
-                        label: const Text('НОВЫЙ ПРОЕКТ', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
+                        label: const Text('НОВЫЙ ПРОЕКТ', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
                         onPressed: _clearCurrentProject,
                       ),
                       const SizedBox(width: 12),
                       ElevatedButton.icon(
                         style: ElevatedButton.styleFrom(
-                          backgroundColor: accent,
+                          backgroundColor: ecOrange,
                           foregroundColor: Colors.white,
                           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 17),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                         ),
                         icon: const Icon(Icons.upload_file_rounded, size: 22),
                         label: const Text('ВЫБРАТЬ ФАЙЛ / АРХИВ', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.bold)),
@@ -2708,9 +3001,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                     width: double.infinity,
                     padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF0284C7).withOpacity(0.12),
+                      color: ecNavy.withOpacity(widget.isDark ? 0.25 : 0.07),
                       borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: const Color(0xFF0284C7).withOpacity(0.35)),
+                      border: Border.all(color: ecNavy.withOpacity(0.35)),
                     ),
                     child: Wrap(
                       spacing: 12,
@@ -2720,9 +3013,14 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                         Text('В архиве ${_blankBoardsList.length} плат:', style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.bold)),
                         for (int i = 0; i < _blankBoardsList.length; i++)
                           ChoiceChip(
+                            selectedColor: ecOrange,
                             label: Text(
                               'Плата ${i + 1}: ${(_blankBoardsList[i] as Map)['board_name'] ?? 'Позиция ${i + 1}'}',
-                              style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600),
+                              style: TextStyle(
+                                fontSize: 13.5,
+                                fontWeight: FontWeight.w600,
+                                color: _selectedBoardIdx == i ? Colors.white : null,
+                              ),
                             ),
                             selected: _selectedBoardIdx == i,
                             onSelected: (_) {
@@ -2738,7 +3036,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                           ),
                         ElevatedButton.icon(
                           style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color(0xFF0D9488),
+                            backgroundColor: ecNavy,
                             foregroundColor: Colors.white,
                             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                           ),
@@ -2758,12 +3056,33 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                       flex: 6,
                       child: Container(
                         padding: const EdgeInsets.all(24),
-                        decoration: BoxDecoration(color: _cardBg, borderRadius: BorderRadius.circular(16), border: Border.all(color: _borderCol)),
+                        decoration: BoxDecoration(
+                          color: _cardBg,
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(color: _borderCol),
+                          boxShadow: widget.isDark
+                              ? null
+                              : [BoxShadow(color: ecNavy.withOpacity(0.05), blurRadius: 12, offset: const Offset(0, 4))],
+                        ),
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            const Text('1. Параметры платы и расчет стоимости', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                            const SizedBox(height: 16),
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                              children: [
+                                Text(
+                                  '1. Параметры платы и расчет стоимости',
+                                  style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: widget.isDark ? Colors.white : ecNavy),
+                                ),
+                                TextButton.icon(
+                                  style: TextButton.styleFrom(foregroundColor: ecOrange),
+                                  icon: const Icon(Icons.tune_rounded, size: 18),
+                                  label: const Text('Изменить тарифы прайса', style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.bold)),
+                                  onPressed: _openTariffEditorDialog,
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 14),
                             Row(
                               children: [
                                 Expanded(child: _inputField(controller: _customerController, label: 'Заказчик', icon: Icons.business_rounded)),
@@ -2817,9 +3136,11 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                             Container(
                               padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
                               decoration: BoxDecoration(
-                                color: (hasValidDimensions ? const Color(0xFF0284C7) : Colors.amberAccent).withOpacity(0.14),
+                                color: widget.isDark
+                                    ? ecNavy.withOpacity(0.35)
+                                    : const Color(0xFFEEF4FB),
                                 borderRadius: BorderRadius.circular(12),
-                                border: Border.all(color: (hasValidDimensions ? const Color(0xFF0284C7) : Colors.amberAccent).withOpacity(0.45)),
+                                border: Border.all(color: widget.isDark ? const Color(0xFF3B82F6) : ecNavy.withOpacity(0.35), width: 1.3),
                               ),
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -2829,7 +3150,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     children: [
                                       Text(
                                         'Расч. площадь 1 шт: ${singleAreaDm2.toStringAsFixed(3)} дм²',
-                                        style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w500),
+                                        style: const TextStyle(fontSize: 14.5, fontWeight: FontWeight.w600),
                                       ),
                                       Text(
                                         'Партия: ${totalAreaDm2.toStringAsFixed(2)} дм²',
@@ -2843,15 +3164,19 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     children: [
                                       Text(
                                         hasValidDimensions ? 'Расчёт по прайсу 2026 ($_urgency) с НДС 22%:' : 'Укажите длину X и ширину Y для расчёта цены:',
-                                        style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+                                        style: TextStyle(
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.bold,
+                                          color: widget.isDark ? Colors.white : ecNavy,
+                                        ),
                                       ),
                                       Text(
                                         hasValidDimensions ? '${totalSumWithVat.toStringAsFixed(2)} руб.' : '0.00 руб.',
                                         style: TextStyle(
-                                          fontSize: 21,
+                                          fontSize: 22,
                                           fontWeight: FontWeight.w900,
                                           letterSpacing: 0.3,
-                                          color: hasValidDimensions ? const Color(0xFF38BDF8) : Colors.amberAccent,
+                                          color: hasValidDimensions ? ecOrange : Colors.amber,
                                         ),
                                       ),
                                     ],
@@ -2861,10 +3186,10 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     Row(
                                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                       children: [
-                                        const Text('Цена с сайта / из КП завода:', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.bold, color: Color(0xFF10B981))),
+                                        const Text('Цена с сайта / из КП завода:', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.bold, color: Color(0xFF059669))),
                                         Text(
                                           _webPriceResult ?? '...',
-                                          style: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold, color: Color(0xFF10B981)),
+                                          style: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold, color: Color(0xFF059669)),
                                         ),
                                       ],
                                     ),
@@ -2999,6 +3324,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                 Expanded(
                                   child: CheckboxListTile(
                                     dense: true,
+                                    activeColor: ecOrange,
                                     contentPadding: EdgeInsets.zero,
                                     title: const Text('Электротест', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w500)),
                                     value: _electroTest,
@@ -3032,7 +3358,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                               width: double.infinity,
                               padding: const EdgeInsets.all(14),
                               decoration: BoxDecoration(
-                                color: widget.isDark ? const Color(0xFF0A0F1A) : const Color(0xFFF8FAFC),
+                                color: widget.isDark ? const Color(0xFF0A0F1A) : const Color(0xFFF1F5F9),
                                 borderRadius: BorderRadius.circular(11),
                                 border: Border.all(color: _borderCol),
                               ),
@@ -3045,19 +3371,19 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                               children: [
                                 ElevatedButton.icon(
                                   style: ElevatedButton.styleFrom(
-                                    backgroundColor: const Color(0xFF7C3AED),
+                                    backgroundColor: ecOrange,
                                     foregroundColor: Colors.white,
-                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+                                    padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
                                   ),
-                                  icon: const Icon(Icons.picture_as_pdf_rounded, size: 18),
-                                  label: const Text('Сформировать КП (PDF)', style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold)),
+                                  icon: const Icon(Icons.picture_as_pdf_rounded, size: 19),
+                                  label: const Text('Сформировать КП (PDF)', style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.bold)),
                                   onPressed: () => _generateOfficialKpDocument(saveAsPdf: true),
                                 ),
                                 ElevatedButton.icon(
                                   style: ElevatedButton.styleFrom(
-                                    backgroundColor: const Color(0xFF6D28D9),
+                                    backgroundColor: ecNavy,
                                     foregroundColor: Colors.white,
-                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                                   ),
                                   icon: const Icon(Icons.request_quote_rounded, size: 18),
                                   label: const Text('КП (HTML-бланк)', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
@@ -3065,9 +3391,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                 ),
                                 ElevatedButton.icon(
                                   style: ElevatedButton.styleFrom(
-                                    backgroundColor: const Color(0xFF2563EB),
+                                    backgroundColor: ecNavyLight,
                                     foregroundColor: Colors.white,
-                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                                   ),
                                   icon: _isFetchingWebPrice
                                       ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
@@ -3077,9 +3403,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                 ),
                                 ElevatedButton.icon(
                                   style: ElevatedButton.styleFrom(
-                                    backgroundColor: const Color(0xFF0D9488),
+                                    backgroundColor: const Color(0xFF0F766E),
                                     foregroundColor: Colors.white,
-                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                                   ),
                                   icon: const Icon(Icons.copy_rounded, size: 18),
                                   label: const Text('Копировать строку КП', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
@@ -3090,9 +3416,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                 ),
                                 ElevatedButton.icon(
                                   style: ElevatedButton.styleFrom(
-                                    backgroundColor: accent,
+                                    backgroundColor: const Color(0xFF1E40AF),
                                     foregroundColor: Colors.white,
-                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                                   ),
                                   icon: const Icon(Icons.description_rounded, size: 18),
                                   label: const Text('Сохранить ТЗ (.TXT)', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
@@ -3100,9 +3426,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                 ),
                                 ElevatedButton.icon(
                                   style: ElevatedButton.styleFrom(
-                                    backgroundColor: const Color(0xFF10B981),
+                                    backgroundColor: const Color(0xFF059669),
                                     foregroundColor: Colors.white,
-                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                                   ),
                                   icon: const Icon(Icons.email_outlined, size: 18),
                                   label: const Text('Шаблон письма клиенту', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
@@ -3110,10 +3436,12 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                 ),
                                 OutlinedButton.icon(
                                   style: OutlinedButton.styleFrom(
-                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 13),
+                                    foregroundColor: widget.isDark ? Colors.white : ecNavy,
+                                    side: BorderSide(color: widget.isDark ? Colors.white24 : ecNavy),
+                                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                                   ),
                                   icon: const Icon(Icons.open_in_new_rounded, size: 18),
-                                  label: const Text('Открыть сайт вручную', style: TextStyle(fontSize: 14)),
+                                  label: const Text('Открыть сайт pselectro.ru', style: TextStyle(fontSize: 14)),
                                   onPressed: _openPselectroCalculator,
                                 ),
                               ],
@@ -3129,15 +3457,25 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                         children: [
                           Container(
                             padding: const EdgeInsets.all(22),
-                            decoration: BoxDecoration(color: _cardBg, borderRadius: BorderRadius.circular(16), border: Border.all(color: _borderCol)),
+                            decoration: BoxDecoration(
+                              color: _cardBg,
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(color: _borderCol),
+                              boxShadow: widget.isDark
+                                  ? null
+                                  : [BoxShadow(color: ecNavy.withOpacity(0.05), blurRadius: 12, offset: const Offset(0, 4))],
+                            ),
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                const Row(
+                                Row(
                                   children: [
-                                    Icon(Icons.verified_user_rounded, color: Color(0xFF10B981), size: 24),
-                                    SizedBox(width: 10),
-                                    Text('2. DFM-контроль (ЭЛЕКТРОконнект)', style: TextStyle(fontSize: 17.5, fontWeight: FontWeight.bold)),
+                                    const Icon(Icons.verified_user_rounded, color: ecOrange, size: 24),
+                                    const SizedBox(width: 10),
+                                    Text(
+                                      '2. DFM-контроль (ЭЛЕКТРОконнект)',
+                                      style: TextStyle(fontSize: 17.5, fontWeight: FontWeight.bold, color: widget.isDark ? Colors.white : ecNavy),
+                                    ),
                                   ],
                                 ),
                                 const SizedBox(height: 14),
@@ -3146,7 +3484,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     margin: const EdgeInsets.only(bottom: 12),
                                     padding: const EdgeInsets.all(12),
                                     decoration: BoxDecoration(
-                                      color: const Color(0xFF10B981).withOpacity(0.14),
+                                      color: const Color(0xFF10B981).withOpacity(0.12),
                                       borderRadius: BorderRadius.circular(11),
                                       border: Border.all(color: const Color(0xFF10B981).withOpacity(0.45)),
                                     ),
@@ -3154,7 +3492,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                       _blankBoardsList.length > 1
                                           ? 'Из архива загружено всех позиций: ${_blankBoardsList.length} шт. Переключайтесь между платами сверху и нажмите «Сформировать КП (PDF)»!'
                                           : 'Параметры (срочность «$_urgency», размеры X/Y, тираж, слои, покрытие и примечания) считаны из документа!',
-                                      style: const TextStyle(fontSize: 13.5),
+                                      style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w500),
                                     ),
                                   ),
                                 if (_analysis?.hasNestedArchive == true)
@@ -3176,9 +3514,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     margin: const EdgeInsets.only(bottom: 12),
                                     padding: const EdgeInsets.all(12),
                                     decoration: BoxDecoration(
-                                      color: const Color(0xFF0284C7).withOpacity(0.14),
+                                      color: ecNavy.withOpacity(0.1),
                                       borderRadius: BorderRadius.circular(11),
-                                      border: Border.all(color: const Color(0xFF0284C7).withOpacity(0.45)),
+                                      border: Border.all(color: ecNavy.withOpacity(0.35)),
                                     ),
                                     child: const Text(
                                       'В архиве исходник платы (.PCB/.LAY) без Gerber-слоёв. Нажмите на бланк .XLS или чертёж стека в списке ниже, чтобы открыть их и посмотреть размеры X/Y.',
@@ -3190,7 +3528,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     margin: const EdgeInsets.only(bottom: 12),
                                     padding: const EdgeInsets.all(12),
                                     decoration: BoxDecoration(
-                                      color: Colors.amberAccent.withOpacity(0.14),
+                                      color: ecOrange.withOpacity(0.14),
                                       borderRadius: BorderRadius.circular(11),
                                     ),
                                     child: const Text('В архиве бинарный .BRD без контура — укажите X и Y вручную.', style: TextStyle(fontSize: 13.5)),
@@ -3198,8 +3536,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                 ...dfmChecks.map((rawChk) {
                                   final chk = rawChk as DfmCheckItem;
                                   final col = chk.level == 'error'
-                                      ? Colors.redAccent
-                                      : (chk.level == 'warn' ? Colors.amberAccent : const Color(0xFF10B981));
+                                      ? const Color(0xFFDC2626)
+                                      : (chk.level == 'warn' ? ecOrange : const Color(0xFF059669));
                                   final icon = chk.level == 'error'
                                       ? Icons.cancel_rounded
                                       : (chk.level == 'warn' ? Icons.warning_amber_rounded : Icons.check_circle_rounded);
@@ -3207,9 +3545,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     margin: const EdgeInsets.only(bottom: 10),
                                     padding: const EdgeInsets.all(12),
                                     decoration: BoxDecoration(
-                                      color: col.withOpacity(0.1),
+                                      color: col.withOpacity(widget.isDark ? 0.14 : 0.08),
                                       borderRadius: BorderRadius.circular(11),
-                                      border: Border.all(color: col.withOpacity(0.35)),
+                                      border: Border.all(color: col.withOpacity(0.4)),
                                     ),
                                     child: Row(
                                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -3237,14 +3575,24 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                             const SizedBox(height: 18),
                             Container(
                               padding: const EdgeInsets.all(22),
-                              decoration: BoxDecoration(color: _cardBg, borderRadius: BorderRadius.circular(16), border: Border.all(color: _borderCol)),
+                              decoration: BoxDecoration(
+                                color: _cardBg,
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(color: _borderCol),
+                                boxShadow: widget.isDark
+                                    ? null
+                                    : [BoxShadow(color: ecNavy.withOpacity(0.05), blurRadius: 12, offset: const Offset(0, 4))],
+                              ),
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Row(
                                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                     children: [
-                                      Text('3. Состав архива (${_analysis!.totalHoles} отв.)', style: const TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
+                                      Text(
+                                        '3. Состав архива (${_analysis!.totalHoles} отв.)',
+                                        style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold, color: widget.isDark ? Colors.white : ecNavy),
+                                      ),
                                       Text('Клик по файлу — открыть', style: TextStyle(fontSize: 12.5, color: _subtleText)),
                                     ],
                                   ),
@@ -3258,7 +3606,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                         margin: const EdgeInsets.symmetric(vertical: 3),
                                         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
                                         decoration: BoxDecoration(
-                                          color: l.isImportantDoc ? accent.withOpacity(0.08) : Colors.transparent,
+                                          color: l.isImportantDoc ? ecOrange.withOpacity(0.1) : Colors.transparent,
                                           borderRadius: BorderRadius.circular(8),
                                         ),
                                         child: Row(
@@ -3266,7 +3614,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                             Icon(
                                               l.isImportantDoc ? Icons.open_in_new_rounded : Icons.insert_drive_file_outlined,
                                               size: 17,
-                                              color: l.isImportantDoc ? const Color(0xFF38BDF8) : accent,
+                                              color: l.isImportantDoc ? ecOrange : (widget.isDark ? const Color(0xFF60A5FA) : ecNavy),
                                             ),
                                             const SizedBox(width: 8),
                                             Expanded(
@@ -3275,7 +3623,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                                 style: TextStyle(
                                                   fontSize: 13.5,
                                                   fontWeight: FontWeight.w600,
-                                                  color: l.isImportantDoc ? const Color(0xFF38BDF8) : null,
+                                                  color: l.isImportantDoc ? (widget.isDark ? const Color(0xFFFB923C) : ecNavy) : null,
                                                 ),
                                               ),
                                             ),
