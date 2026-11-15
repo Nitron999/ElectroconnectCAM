@@ -156,12 +156,10 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   final TextEditingController _minHoleController = TextEditingController(text: '0.30');
   final TextEditingController _notesController = TextEditingController();
 
-  // Поля прайс-калькулятора
   final TextEditingController _basePriceDm2Controller = TextEditingController(text: '528.0');
   final TextEditingController _setupFeeController = TextEditingController(text: '2400.0');
   bool _manualPriceOverride = false;
 
-  // Состояние парсинга цены напрямую с сайта pselectro.ru
   bool _isFetchingWebPrice = false;
   String? _webPriceResult;
   String? _webPriceDetails;
@@ -292,6 +290,44 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     });
   }
 
+  /// Попытка распаковать .rar / .7z во временную папку через WinRAR или 7-Zip на Windows
+  Future<bool> _extractExternalArchiveToDir(String archivePath, Directory targetDir) async {
+    if (!Platform.isWindows) return false;
+    if (!targetDir.existsSync()) targetDir.createSync(recursive: true);
+
+    const winrarCandidates = [
+      r'C:\Program Files\WinRAR\UnRAR.exe',
+      r'C:\Program Files\WinRAR\WinRAR.exe',
+      r'C:\Program Files (x86)\WinRAR\UnRAR.exe',
+      r'C:\Program Files (x86)\WinRAR\WinRAR.exe',
+    ];
+    for (final exe in winrarCandidates) {
+      if (File(exe).existsSync()) {
+        final res = await Process.run(exe, ['x', '-o+', '-y', archivePath, '${targetDir.path}\\']);
+        if (res.exitCode == 0) return true;
+      }
+    }
+
+    const sevenZipCandidates = [
+      r'C:\Program Files\7-Zip\7z.exe',
+      r'C:\Program Files (x86)\7-Zip\7z.exe',
+    ];
+    for (final exe in sevenZipCandidates) {
+      if (File(exe).existsSync()) {
+        final res = await Process.run(exe, ['x', '-y', '-o${targetDir.path}', archivePath]);
+        if (res.exitCode == 0) return true;
+      }
+    }
+
+    // Пробуем системную команду tar (в Windows 10/11 умеет распаковывать некоторые архивы)
+    try {
+      final res = await Process.run('tar', ['-xf', archivePath, '-C', targetDir.path]);
+      if (res.exitCode == 0) return true;
+    } catch (_) {}
+
+    return false;
+  }
+
   Future<void> _fetchPriceFromWebsite() async {
     final w = double.tryParse(_widthController.text.replaceAll(',', '.')) ?? 0;
     final h = double.tryParse(_heightController.text.replaceAll(',', '.')) ?? 0;
@@ -310,7 +346,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     setState(() {
       _isFetchingWebPrice = true;
       _webPriceResult = null;
-      _webPriceDetails = 'Подключение к pselectro.ru/calculate-cost/...';
+      _webPriceDetails = 'Открываю pselectro.ru/calculate-cost/ и заполняю форму...';
     });
 
     try {
@@ -323,7 +359,6 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
 # -*- coding: utf-8 -*-
 import json
 import re
-import sys
 from playwright.sync_api import sync_playwright
 
 WIDTH = "${w.toStringAsFixed(1)}"
@@ -333,56 +368,74 @@ LAYERS = "$_layersCount"
 THICKNESS = "$_thickness"
 FOIL = "$_foil"
 MASK_SIDE = "$_maskSide"
-MASK_COLOR = "$_maskColor"
-SILK_SIDE = "$_silkSide"
 FINISH = "$_finish"
 ORDER_TYPE = "$_orderType"
 OUT_JSON = r"${resultFile.path}"
 
-def try_fill_by_label_or_placeholder(page, keywords, value):
-    inputs = page.locator("input[type='text'], input[type='number'], input:not([type])")
-    count = inputs.count()
-    for i in range(count):
+def fill_in_context(ctx, keywords, value):
+    inputs = ctx.locator("input[type='text'], input[type='number'], input:not([type])")
+    for i in range(inputs.count()):
         inp = inputs.nth(i)
-        if not inp.is_visible():
-            continue
-        attrs = " ".join([
-            inp.get_attribute("name") or "",
-            inp.get_attribute("id") or "",
-            inp.get_attribute("placeholder") or "",
-            inp.get_attribute("aria-label") or "",
-        ]).lower()
-        # Проверяем также текст родительского блока
-        parent_text = ""
         try:
-            parent_text = inp.locator("xpath=..").inner_text().lower()
-        except Exception:
-            pass
-        combined = attrs + " " + parent_text
-        if any(k in combined for k in keywords):
-            try:
+            if not inp.is_visible():
+                continue
+            attrs = " ".join([
+                inp.get_attribute("name") or "",
+                inp.get_attribute("id") or "",
+                inp.get_attribute("placeholder") or "",
+                inp.get_attribute("aria-label") or "",
+            ]).lower()
+            near_text = ""
+            for xp in ["xpath=..", "xpath=../..", "xpath=../../.."]:
+                try:
+                    t = inp.locator(xp).inner_text().lower()
+                    if len(t) < 160:
+                        near_text += " " + t
+                except Exception:
+                    pass
+            combined = attrs + " " + near_text
+            if any(k in combined for k in keywords):
+                inp.click()
                 inp.fill("")
                 inp.fill(str(value))
+                inp.dispatch_event("input")
                 inp.dispatch_event("change")
                 inp.dispatch_event("blur")
                 return True
+        except Exception:
+            pass
+    return False
+
+def click_in_context(ctx, variants):
+    for txt in variants:
+        loc = ctx.locator(f"label:has-text('{txt}'), button:has-text('{txt}'), span:has-text('{txt}'), a:has-text('{txt}')")
+        for i in range(loc.count()):
+            el = loc.nth(i)
+            try:
+                if el.is_visible():
+                    el.click(timeout=1200)
+                    return True
             except Exception:
                 pass
     return False
 
-def try_click_option(page, text_variants):
-    for txt in text_variants:
-        loc = page.locator(f"label:has-text('{txt}'), button:has-text('{txt}'), option:has-text('{txt}'), span:has-text('{txt}')")
-        if loc.count() > 0:
-            for i in range(loc.count()):
-                el = loc.nth(i)
-                if el.is_visible():
-                    try:
-                        el.click(timeout=1500)
-                        return True
-                    except Exception:
-                        pass
-    return False
+def extract_prices_from_text(text):
+    # Ищем любые суммы рядом с руб / ₽ или после слов Итого / Стоимость / Цена
+    found = []
+    for pat in [
+        r"(?:итого|стоимость|сумма|всего|цена)[^\\d\\n]{0,40}(\\d[\\d\\s]{1,12}(?:[.,]\\d{1,2})?)",
+        r"(\\d[\\d\\s]{1,12}(?:[.,]\\d{1,2})?)\\s*(?:руб\\.?|₽)",
+    ]:
+        for m in re.findall(pat, text, flags=re.IGNORECASE):
+            clean = re.sub(r"\\s+", " ", m).strip()
+            num_only = re.sub(r"[^\\d.,]", "", clean).replace(",", ".")
+            try:
+                val = float(num_only)
+                if val >= 100.0:
+                    found.append((val, clean))
+            except Exception:
+                pass
+    return found
 
 def main():
     res = {"ok": False, "price": "", "raw": "", "error": ""}
@@ -392,54 +445,54 @@ def main():
             context = browser.new_context(viewport={"width": 1366, "height": 900})
             page = context.new_page()
             page.goto("https://pselectro.ru/calculate-cost/", timeout=60000, wait_until="domcontentloaded")
-            page.wait_for_timeout(2500)
-
-            # Закрываем возможные баннеры cookies
-            try_click_option(page, ["Принять", "Согласен", "Хорошо"])
-
-            # Заполняем количество слоев
-            if LAYERS == "1":
-                try_click_option(page, ["1 слой", "Односторонняя", "1"])
-            elif LAYERS == "2":
-                try_click_option(page, ["2 слоя", "Двухсторонняя", "2"])
-            else:
-                try_click_option(page, [f"{LAYERS} сло", f"{LAYERS}"])
-
-            # Заполняем габариты X, Y и тираж
-            try_fill_by_label_or_placeholder(page, ["длина", "width", "размер x", "x,"], WIDTH)
-            try_fill_by_label_or_placeholder(page, ["ширина", "height", "размер y", "y,"], HEIGHT)
-            try_fill_by_label_or_placeholder(page, ["количество", "тираж", "qty", "count", "шт"], QTY)
-
-            # Выбор маски, покрытия и повтора
-            if ORDER_TYPE == "Повтор":
-                try_click_option(page, ["Повтор", "Повторный"])
-            if MASK_SIDE == "Без маски":
-                try_click_option(page, ["Без маски"])
-            if "золото" in FINISH.lower():
-                try_click_option(page, ["Иммерсионное золото", "ENIG"])
-            elif "олово" in FINISH.lower():
-                try_click_option(page, ["Иммерсионное олово"])
-
-            page.wait_for_timeout(1200)
-
-            # Нажимаем кнопку расчёта, если она есть
-            try_click_option(page, ["Рассчитать", "Посчитать", "Расчет стоимости"])
             page.wait_for_timeout(3000)
 
-            body_text = page.locator("body").inner_text()
-            # Ищем итоговую сумму в рублях на странице
-            matches = re.findall(r"(?:итого|стоимость|сумма|всего)[^\\d]{0,35}([\\d\\s]+[.,]?\\d*)\\s*(?:руб|₽)", body_text, flags=re.IGNORECASE)
-            if not matches:
-                matches = re.findall(r"([\\d\\s]{2,12}[.,]\\d{2})\\s*(?:руб|₽)", body_text, flags=re.IGNORECASE)
+            contexts = [page] + list(page.frames)
+            for c in contexts:
+                click_in_context(c, ["Принять", "Согласен", "Понятно"])
 
-            if matches:
-                cleaned_prices = [m.strip() for m in matches if any(ch.isdigit() for ch in m)]
+            for c in contexts:
+                if LAYERS == "1":
+                    click_in_context(c, ["1 слой", "Односторонн"])
+                elif LAYERS == "2":
+                    click_in_context(c, ["2 слоя", "Двусторонн", "Двухсторонн"])
+                else:
+                    click_in_context(c, [f"{LAYERS} сло"])
+
+                fill_in_context(c, ["длина", "width", "размер x", "x, мм", "x ("], WIDTH)
+                fill_in_context(c, ["ширина", "height", "размер y", "y, мм", "y ("], HEIGHT)
+                fill_in_context(c, ["количество", "тираж", "qty", "count", "шт"], QTY)
+
+                if ORDER_TYPE == "Повтор":
+                    click_in_context(c, ["Повтор"])
+                if MASK_SIDE == "Без маски":
+                    click_in_context(c, ["Без маски"])
+                if "золото" in FINISH.lower():
+                    click_in_context(c, ["Иммерсионное золото", "ENIG"])
+
+            page.wait_for_timeout(1200)
+            for c in contexts:
+                click_in_context(c, ["Рассчитать", "Посчитать", "Расчет"])
+            page.wait_for_timeout(3500)
+
+            all_text = ""
+            for c in [page] + list(page.frames):
+                try:
+                    all_text += "\\n" + c.locator("body").inner_text()
+                except Exception:
+                    pass
+
+            prices = extract_prices_from_text(all_text)
+            if prices:
+                # Берём максимальную из найденных итоговых сумм заказа (обычно итог с НДС больше единичных ставок)
+                prices.sort(key=lambda x: x[0])
+                best_val, best_str = prices[-1]
                 res["ok"] = True
-                res["price"] = cleaned_prices[-1] + " руб."
-                res["raw"] = "Найдено на странице: " + ", ".join(cleaned_prices[:3])
+                res["price"] = f"{best_str} руб."
+                res["raw"] = "Считано со страницы калькулятора pselectro.ru"
             else:
                 res["ok"] = False
-                res["error"] = "Не удалось автоматически считать цифру итога со страницы (проверьте открытое окно браузера)."
+                res["error"] = "Калькулятор на сайте не выдал числовую сумму (возможно, на сайте только форма отправки заявки менеджерам)."
 
             page.wait_for_timeout(2000)
             browser.close()
@@ -472,7 +525,7 @@ if __name__ == "__main__":
           _showSnack('Цена с сайта получена: $_webPriceResult');
         } else {
           final err = data['error']?.toString() ?? 'Не удалось получить цену';
-          setState(() => _webPriceDetails = 'Ошибка: $err');
+          setState(() => _webPriceDetails = err);
           _showSnack(err);
         }
       } else {
@@ -480,13 +533,11 @@ if __name__ == "__main__":
         setState(() {
           _webPriceDetails = stderrText.isNotEmpty
               ? 'Python ошибка: $stderrText'
-              : 'Скрипт завершился без файла результата (проверьте установку playwright).';
+              : 'Скрипт завершился без ответа.';
         });
-        _showSnack('Не удалось запустить Playwright (см. статус под кнопкой)');
       }
     } catch (e) {
       setState(() => _webPriceDetails = 'Ошибка запуска: $e');
-      _showSnack('Ошибка: $e');
     } finally {
       if (mounted) {
         setState(() => _isFetchingWebPrice = false);
@@ -497,17 +548,86 @@ if __name__ == "__main__":
   Future<void> _pickAndAnalyzeZip() async {
     final result = await FilePicker.platform.pickFiles(
       type: FileType.custom,
-      allowedExtensions: ['zip'],
+      allowedExtensions: ['zip', 'rar'],
     );
     if (result == null || result.files.single.path == null) return;
 
-    final zipFile = File(result.files.single.path!);
-    final archiveName = zipFile.path.split(Platform.pathSeparator).last;
-    final archiveDir = zipFile.parent.path;
+    final selectedFile = File(result.files.single.path!);
+    final archiveName = selectedFile.path.split(Platform.pathSeparator).last;
+    final archiveDir = selectedFile.parent.path;
 
     try {
-      final bytes = await zipFile.readAsBytes();
-      final archive = ZipDecoder().decodeBytes(bytes);
+      // Собираем список виртуальных файлов (имя + байты), включая распаковку вложенных .rar / .zip
+      final List<({String name, List<int> bytes})> projectFiles = [];
+      bool hasUnpackedNestedArchive = false;
+
+      if (selectedFile.path.toLowerCase().endsWith('.rar')) {
+        final tempDir = await getTemporaryDirectory();
+        final unpackDir = Directory('${tempDir.path}\\cam_unpack_${DateTime.now().millisecondsSinceEpoch}');
+        final ok = await _extractExternalArchiveToDir(selectedFile.path, unpackDir);
+        if (ok && unpackDir.existsSync()) {
+          for (final entity in unpackDir.listSync(recursive: true)) {
+            if (entity is File) {
+              projectFiles.add((
+                name: entity.path.split(Platform.pathSeparator).last,
+                bytes: await entity.readAsBytes(),
+              ));
+            }
+          }
+        } else {
+          hasUnpackedNestedArchive = true;
+        }
+      } else {
+        final bytes = await selectedFile.readAsBytes();
+        final archive = ZipDecoder().decodeBytes(bytes);
+
+        for (final file in archive.files) {
+          if (!file.isFile) continue;
+          final rawName = file.name.split('/').last.split('\\').last;
+          if (rawName.isEmpty || rawName.startsWith('.')) continue;
+
+          final low = rawName.toLowerCase();
+          final fileBytes = file.content as List<int>;
+
+          if (low.endsWith('.zip')) {
+            // Вложенный .zip распаковываем прямо в памяти
+            try {
+              final innerArchive = ZipDecoder().decodeBytes(fileBytes);
+              for (final inner in innerArchive.files) {
+                if (!inner.isFile) continue;
+                final innerName = inner.name.split('/').last.split('\\').last;
+                if (innerName.isNotEmpty) {
+                  projectFiles.add((name: innerName, bytes: inner.content as List<int>));
+                }
+              }
+            } catch (_) {
+              projectFiles.add((name: rawName, bytes: fileBytes));
+            }
+          } else if (low.endsWith('.rar') || low.endsWith('.7z')) {
+            // Пробуем автоматически распаковать вложенный .rar через WinRAR / 7-Zip
+            final tempDir = await getTemporaryDirectory();
+            final tempRar = File('${tempDir.path}\\nested_${DateTime.now().millisecondsSinceEpoch}_$rawName');
+            await tempRar.writeAsBytes(fileBytes);
+            final unpackDir = Directory('${tempDir.path}\\nested_out_${DateTime.now().millisecondsSinceEpoch}');
+            final ok = await _extractExternalArchiveToDir(tempRar.path, unpackDir);
+            if (ok && unpackDir.existsSync()) {
+              for (final entity in unpackDir.listSync(recursive: true)) {
+                if (entity is File) {
+                  projectFiles.add((
+                    name: entity.path.split(Platform.pathSeparator).last,
+                    bytes: await entity.readAsBytes(),
+                  ));
+                }
+              }
+            } else {
+              hasUnpackedNestedArchive = true;
+              projectFiles.add((name: rawName, bytes: fileBytes));
+            }
+          } else {
+            projectFiles.add((name: rawName, bytes: fileBytes));
+          }
+        }
+      }
 
       final List<GerberLayerInfo> layers = [];
       int copperLayers = 0;
@@ -517,7 +637,6 @@ if __name__ == "__main__":
       bool hasBottomSilk = false;
       bool hasBinaryBrd = false;
       bool hasTextContour = false;
-      bool hasNestedArchive = false;
 
       double? detectedWidth;
       double? detectedHeight;
@@ -528,17 +647,13 @@ if __name__ == "__main__":
       int totalHoles = 0;
       final Map<double, int> drillBreakdown = {};
 
-      for (final file in archive.files) {
-        if (!file.isFile) continue;
-        final rawName = file.name.split('/').last.split('\\').last;
-        if (rawName.isEmpty || rawName.startsWith('.')) continue;
-
+      for (final pf in projectFiles) {
+        final rawName = pf.name;
         final upper = rawName.toUpperCase();
         String role = 'Прочий файл проекта';
 
-        if (upper.endsWith('.RAR') || upper.endsWith('.ZIP') || upper.endsWith('.7Z')) {
-          role = 'Вложенный архив (требует распаковки)';
-          hasNestedArchive = true;
+        if (upper.endsWith('.RAR') || upper.endsWith('.7Z')) {
+          role = 'Нераспакованный RAR (установите WinRAR/7-Zip)';
         } else if (upper.endsWith('.TOP') ||
             upper.endsWith('.GTL') ||
             upper.endsWith('.CMP') ||
@@ -607,13 +722,11 @@ if __name__ == "__main__":
           hasBinaryBrd = true;
         }
 
-        layers.add(GerberLayerInfo(fileName: rawName, role: role, sizeBytes: file.size));
+        layers.add(GerberLayerInfo(fileName: rawName, role: role, sizeBytes: pf.bytes.length));
 
-        final contentBytes = file.content as List<int>;
-        final isLikelyBinary = contentBytes.take(200).where((b) => b == 0).length > 5;
-
-        if (!isLikelyBinary && !hasNestedArchive) {
-          final textContent = utf8.decode(contentBytes, allowMalformed: true);
+        final isLikelyBinary = pf.bytes.take(200).where((b) => b == 0).length > 5;
+        if (!isLikelyBinary) {
+          final textContent = utf8.decode(pf.bytes, allowMalformed: true);
           if (role.contains('Сверловка')) {
             final drillStats = _parseExcellonDrill(textContent);
             totalHoles += drillStats.totalHoles;
@@ -643,7 +756,7 @@ if __name__ == "__main__":
       detectedHeight ??= fallbackCopperHeight;
 
       final finalLayersCount = copperLayers > 0 ? copperLayers : 2;
-      final projectTitle = archiveName.replaceAll(RegExp(r'\.zip$', caseSensitive: false), '');
+      final projectTitle = archiveName.replaceAll(RegExp(r'\.(zip|rar)$', caseSensitive: false), '');
 
       final resultObj = GerberAnalysisResult(
         archiveName: archiveName,
@@ -656,7 +769,7 @@ if __name__ == "__main__":
         hasTopSilk: hasTopSilk,
         hasBottomSilk: hasBottomSilk,
         hasBinaryBrdOnly: hasBinaryBrd && !hasTextContour && detectedWidth == null,
-        hasNestedArchive: hasNestedArchive,
+        hasNestedArchive: hasUnpackedNestedArchive,
         widthMm: detectedWidth,
         heightMm: detectedHeight,
         minTrackMm: minTrackMm,
@@ -694,12 +807,12 @@ if __name__ == "__main__":
         _recalculateTariffFromSpecs(force: true);
       });
 
-      if (hasNestedArchive) {
-        _showSnack('Внутри архива найден .RAR/.ZIP! Распакуйте его или введите габариты X/Y вручную.');
+      if (hasUnpackedNestedArchive) {
+        _showSnack('Не удалось распаковать вложенный .RAR (не найден WinRAR/7-Zip) — укажите X и Y вручную.');
       } else if (detectedWidth == null) {
         _showSnack('Архив загружен, но контур не распознан — введите X и Y вручную для расчёта цены.');
       } else {
-        _showSnack('Проект $archiveName проанализирован!');
+        _showSnack('Проект $archiveName проанализирован и рассчитан!');
       }
     } catch (e) {
       _showSnack('Ошибка чтения архива: $e');
@@ -1128,7 +1241,7 @@ $priceLine
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text('ЭЛЕКТРОконнект — CAM & DFM Контроль (Кувезенков А.А.)', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-                Text('Анализ Gerber • Проверка норм завода • Расчет цены с сайта и ТЗ', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                Text('Анализ Gerber / RAR / ZIP • Проверка норм завода • Расчет цены и ТЗ', style: TextStyle(fontSize: 11, color: Colors.grey)),
               ],
             ),
           ],
@@ -1161,7 +1274,7 @@ $priceLine
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              _analysis != null ? 'Проект: ${_analysis!.archiveName}' : 'Загрузите архив с файлами платы (.zip)',
+                              _analysis != null ? 'Проект: ${_analysis!.archiveName}' : 'Загрузите архив с файлами платы (.zip / .rar)',
                               style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                             ),
                             Text(
@@ -1192,7 +1305,7 @@ $priceLine
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                         ),
                         icon: const Icon(Icons.upload_file_rounded, size: 20),
-                        label: const Text('ВЫБРАТЬ .ZIP АРХИВ', style: TextStyle(fontWeight: FontWeight.bold)),
+                        label: const Text('ВЫБРАТЬ АРХИВ', style: TextStyle(fontWeight: FontWeight.bold)),
                         onPressed: _pickAndAnalyzeZip,
                       ),
                     ],
@@ -1505,7 +1618,7 @@ $priceLine
                                       border: Border.all(color: Colors.redAccent.withOpacity(0.45)),
                                     ),
                                     child: const Text(
-                                      'Внутри .zip обнаружен вложенный архив (.rar/.zip)! Распакуйте его перед загрузкой, иначе слои и контур не прочитаются автоматически.',
+                                      'Внутри обнаружен .RAR, а WinRAR / 7-Zip не найдены в стандартных папках Program Files — распакуйте его вручную или укажите X/Y слева.',
                                       style: TextStyle(fontSize: 12),
                                     ),
                                   ),
