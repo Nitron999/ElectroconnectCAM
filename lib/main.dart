@@ -155,6 +155,8 @@ class CamWorkspaceScreen extends StatefulWidget {
 
 class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   GerberAnalysisResult? _analysis;
+  List<dynamic> _blankBoardsList = [];
+  int _selectedBoardIdx = 0;
 
   final TextEditingController _customerController = TextEditingController();
   final TextEditingController _orderNameController = TextEditingController();
@@ -201,12 +203,18 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     );
   }
 
-  void _recalculateTariffFromSpecs({bool force = false}) {
-    if (_manualPriceOverride && !force) return;
-
+  ({double dm2Rate, double setupFee}) _computeRatesForSpecs({
+    required int layers,
+    required String material,
+    required String foil,
+    required String finish,
+    required String maskColor,
+    required String maskSide,
+    required String orderType,
+  }) {
     double dm2Rate;
     double setupFee;
-    switch (_layersCount) {
+    switch (layers) {
       case 1:
         dm2Rate = 380.0;
         setupFee = 1800.0;
@@ -228,42 +236,60 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         setupFee = 12000.0;
         break;
       default:
-        dm2Rate = 3200.0 + (_layersCount - 10) * 350.0;
+        dm2Rate = 3200.0 + (layers - 10) * 350.0;
         setupFee = 16000.0;
         break;
     }
 
-    if (_material == 'FR4 Tg170') dm2Rate *= 1.15;
-    if (_material == 'Алюминий') dm2Rate *= 1.35;
-    if (_material == 'Rogers') dm2Rate *= 2.80;
+    if (material == 'FR4 Tg170') dm2Rate *= 1.15;
+    if (material == 'Алюминий') dm2Rate *= 1.35;
+    if (material == 'Rogers') dm2Rate *= 2.80;
 
-    final foilInt = int.tryParse(_foil) ?? 18;
+    final foilInt = int.tryParse(foil) ?? 18;
     if (foilInt >= 70) {
       dm2Rate *= 1.30;
     } else if (foilInt >= 35) {
       dm2Rate *= 1.12;
     }
 
-    if (_finish == 'Иммерсионное золото') {
+    if (finish == 'Иммерсионное золото') {
       dm2Rate *= 1.35;
-    } else if (_finish == 'Иммерсионное олово') {
+    } else if (finish == 'Иммерсионное олово') {
       dm2Rate *= 1.15;
     }
 
-    if (_maskColor != 'Зеленая' && _maskSide != 'Без маски') {
+    if (maskColor != 'Зеленая' && maskSide != 'Без маски') {
       dm2Rate *= 1.08;
     }
 
-    if (_orderType == 'Повтор') {
+    if (orderType == 'Повтор') {
       setupFee = 0.0;
     }
 
-    _basePriceDm2Controller.text = dm2Rate.toStringAsFixed(1);
-    _setupFeeController.text = setupFee.toStringAsFixed(1);
+    return (dm2Rate: dm2Rate, setupFee: setupFee);
+  }
+
+  void _recalculateTariffFromSpecs({bool force = false}) {
+    if (_manualPriceOverride && !force) return;
+
+    final rates = _computeRatesForSpecs(
+      layers: _layersCount,
+      material: _material,
+      foil: _foil,
+      finish: _finish,
+      maskColor: _maskColor,
+      maskSide: _maskSide,
+      orderType: _orderType,
+    );
+
+    _basePriceDm2Controller.text = rates.dm2Rate.toStringAsFixed(1);
+    _setupFeeController.text = rates.setupFee.toStringAsFixed(1);
   }
 
   void _resetAllFieldsToDefault({bool showToast = true}) {
     _analysis = null;
+    _blankBoardsList = [];
+    _selectedBoardIdx = 0;
     _manualPriceOverride = false;
     _webPriceResult = null;
     _webPriceDetails = null;
@@ -300,6 +326,91 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     });
   }
 
+  void _applyBoardFromBlank(Map<String, dynamic> board, String baseTitle) {
+    if (board['customer'] != null && board['customer'].toString().isNotEmpty) {
+      _customerController.text = board['customer'].toString();
+    }
+    final bName = board['board_name']?.toString().trim() ?? '';
+    _orderNameController.text = bName.isNotEmpty ? '$baseTitle ($bName)' : baseTitle;
+
+    if (board['order_type'] != null) {
+      _orderType = board['order_type'].toString();
+    }
+    if (board['width'] != null && board['height'] != null) {
+      _widthController.text = (board['width'] as num).toDouble().toStringAsFixed(1);
+      _heightController.text = (board['height'] as num).toDouble().toStringAsFixed(1);
+    }
+    if (board['qty'] != null) {
+      _qtyController.text = board['qty'].toString();
+    }
+    if (board['layers'] != null) {
+      _layersCount = (board['layers'] as num).toInt();
+    }
+    if (board['material'] != null) {
+      _material = board['material'].toString();
+    }
+    if (board['thickness'] != null) {
+      const validThick = ['0.5', '0.8', '1.0', '1.5', '1.6', '2.0', '2.5', '3.0'];
+      final tStr = board['thickness'].toString();
+      if (validThick.contains(tStr)) _thickness = tStr;
+    }
+    if (board['foil'] != null) {
+      const validFoil = ['12', '18', '35', '50', '70', '105'];
+      final fStr = board['foil'].toString();
+      if (validFoil.contains(fStr)) _foil = fStr;
+    }
+    if (board['mask_side'] != null) {
+      final ms = board['mask_side'].toString().toLowerCase();
+      if (ms.contains('двух')) {
+        _maskSide = 'С двух сторон';
+      } else if (ms.contains('одной') || ms.contains('верх') || ms.contains('низ')) {
+        _maskSide = 'С одной стороны';
+      } else if (ms.contains('без') || ms.contains('нет')) {
+        _maskSide = 'Без маски';
+      }
+    }
+    if (board['silk_side'] != null) {
+      final ss = board['silk_side'].toString().toLowerCase();
+      if (ss.contains('двух')) {
+        _silkSide = 'С двух сторон';
+      } else if (ss.contains('одной') || ss.contains('верх') || ss.contains('низ')) {
+        _silkSide = 'С одной стороны';
+      } else if (ss.contains('без') || ss.contains('нет')) {
+        _silkSide = 'Без маркировки';
+      }
+    }
+    if (board['finish'] != null) {
+      final fin = board['finish'].toString().toLowerCase();
+      if (fin.contains('иммерс') || fin.contains('золот') || fin.contains('enig')) {
+        _finish = 'Иммерсионное золото';
+      } else if (fin.contains('олов')) {
+        _finish = 'Иммерсионное олово';
+      } else if (fin.contains('без')) {
+        _finish = 'Без покрытия';
+      } else {
+        _finish = 'HAL';
+      }
+    }
+    if (board['contour'] != null) {
+      final cnt = board['contour'].toString().toLowerCase();
+      if (cnt.contains('скрайб')) {
+        _contour = 'скрайбирование';
+      } else {
+        _contour = 'фрезеровка';
+      }
+    }
+    if (board['electro_test'] != null) {
+      _electroTest = board['electro_test'] == true;
+    }
+    if (board['notes'] is List) {
+      _notesController.text = (board['notes'] as List).join('; ');
+    }
+    _manualPriceOverride = false;
+    _webPriceResult = null;
+    _webPriceDetails = null;
+    _recalculateTariffFromSpecs(force: true);
+  }
+
   Future<void> _openExtractedFile(String? path, String fileName) async {
     if (path == null || !File(path).existsSync()) {
       _showSnack('Файл $fileName недоступен для открытия.');
@@ -325,72 +436,101 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     sb.writeln(r'        import openpyxl');
     sb.writeln(r'        wb = openpyxl.load_workbook(path, data_only=True)');
     sb.writeln(r'        ws = wb.active');
-    sb.writeln(r'        return [["" if ws.cell(r, c).value is None else str(ws.cell(r, c).value).strip() for c in range(1, 18)] for r in range(1, 55)]');
+    sb.writeln(r'        return [["" if ws.cell(r, c).value is None else str(ws.cell(r, c).value).strip() for c in range(1, 32)] for r in range(1, 60)]');
     sb.writeln(r'    ensure_pkg("xlrd")');
     sb.writeln(r'    import xlrd');
     sb.writeln(r'    wb = xlrd.open_workbook(path)');
     sb.writeln(r'    sh = wb.sheet_by_index(0)');
-    sb.writeln(r'    return [[str(sh.cell_value(r, c)).strip() for c in range(min(18, sh.ncols))] for r in range(min(55, sh.nrows))]');
+    sb.writeln(r'    return [[str(sh.cell_value(r, c)).strip() for c in range(min(32, sh.ncols))] for r in range(min(60, sh.nrows))]');
+    sb.writeln(r'def clean_num_str(s):');
+    sb.writeln(r'    return re.sub(r"\.0$", "", s.strip())');
     sb.writeln(r'def main():');
     sb.writeln(r'    try:');
     sb.writeln(r'        rows = read_lib(EXCEL_PATH)');
     sb.writeln(r'    except Exception as e:');
     sb.writeln(r'        open(OUT_JSON, "w", encoding="utf-8").write(json.dumps({"ok": False, "error": str(e)}))');
     sb.writeln(r'        return');
-    sb.writeln(r'    data = {"ok": True, "notes": []}');
+    sb.writeln(r'    customer = ""');
+    sb.writeln(r'    global_material = None');
+    sb.writeln(r'    global_notes = []');
+    sb.writeln(r'    num_boards = 1');
     sb.writeln(r'    for row in rows:');
     sb.writeln(r'        ne = [x for x in row if x]');
     sb.writeln(r'        if not ne: continue');
-    sb.writeln(r'        row_joined = " ".join(ne).lower()');
-    sb.writeln(r'        if "tg170" in row_joined or "tg 170" in row_joined: data["material"] = "FR4 Tg170"');
-    sb.writeln(r'        elif "rogers" in row_joined: data["material"] = "Rogers"');
-    sb.writeln(r'        elif "алюмин" in row_joined: data["material"] = "Алюминий"');
-    sb.writeln(r'        if "полуотверст" in row_joined: data["notes"].append("Металлизированные полуотверстия")');
-    sb.writeln(r'        if "фаска" in row_joined:');
+    sb.writeln(r'        rj = " ".join(ne).lower()');
+    sb.writeln(r'        if "tg170" in rj or "tg 170" in rj: global_material = "FR4 Tg170"');
+    sb.writeln(r'        elif "rogers" in rj: global_material = "Rogers"');
+    sb.writeln(r'        elif "алюмин" in rj: global_material = "Алюминий"');
+    sb.writeln(r'        if "полуотверст" in rj: global_notes.append("Металлизированные полуотверстия")');
+    sb.writeln(r'        if "фаска" in rj:');
     sb.writeln(r'            for x in ne:');
-    sb.writeln(r'                if "фаска" in x.lower(): data["notes"].append(x)');
-    sb.writeln(r'        if len(ne) < 2: continue');
-    sb.writeln(r'        lbl, val = ne[0].lower(), ne[1]');
+    sb.writeln(r'                if "фаска" in x.lower(): global_notes.append(x)');
+    sb.writeln(r'        if "иное:" in rj or rj.startswith("иное"):');
+    sb.writeln(r'            extra = [x for x in ne if "иное" not in x.lower()]');
+    sb.writeln(r'            if extra: global_notes.append("Иное: " + " ".join(extra))');
+    sb.writeln(r'        lbl = ne[0].lower()');
+    sb.writeln(r'        vals = ne[1:]');
     sb.writeln(r'        if re.fullmatch(r"\d+\.?", lbl) and len(ne) >= 3:');
-    sb.writeln(r'            lbl, val = ne[1].lower(), ne[2]');
-    sb.writeln(r'        if "заказчик" in lbl and "название" in lbl: data["customer"] = val');
-    sb.writeln(r'        elif "тип заказа" in lbl: data["order_type"] = "Повтор" if "повтор" in val.lower() else "Новый"');
-    sb.writeln(r'        elif "имя файла" in lbl: data["board_name"] = val');
-    sb.writeln(r'        elif "количество плат" in lbl:');
-    sb.writeln(r'            m = re.search(r"(\d+)", val)');
-    sb.writeln(r'            if m: data["qty"] = int(m.group(1))');
-    sb.writeln(r'        elif "размеры платы" in lbl or "точные размеры" in lbl:');
-    sb.writeln(r'            m = re.search(r"(\d+(?:[.,]\d+)?)\s*[xхXХ*]\s*(\d+(?:[.,]\d+)?)", val)');
-    sb.writeln(r'            if m:');
-    sb.writeln(r'                data["width"] = float(m.group(1).replace(",", "."))');
-    sb.writeln(r'                data["height"] = float(m.group(2).replace(",", "."))');
-    sb.writeln(r'        elif "количество слоев" in lbl or "количество слоёв" in lbl:');
-    sb.writeln(r'            m = re.search(r"(\d+)", val)');
-    sb.writeln(r'            if m: data["layers"] = int(m.group(1))');
-    sb.writeln(r'        elif "толщина платы" in lbl:');
-    sb.writeln(r'            m = re.search(r"(\d+(?:[.,]\d+)?)", val)');
-    sb.writeln(r'            if m: data["thickness"] = m.group(1).replace(",", ".")');
-    sb.writeln(r'        elif "толщина фольги" in lbl:');
-    sb.writeln(r'            m = re.search(r"(\d+)", val)');
-    sb.writeln(r'            if m: data["foil"] = m.group(1)');
-    sb.writeln(r'        elif "паяльная маска" in lbl: data["mask_side"] = val');
-    sb.writeln(r'        elif "маркировка" in lbl: data["silk_side"] = val');
-    sb.writeln(r'        elif "покрыт" in lbl and "ножев" not in lbl and "разъем" not in lbl and "разъём" not in lbl:');
-    sb.writeln(r'            data["finish"] = val');
-    sb.writeln(r'        elif "ножевых" in lbl and val.lower() not in ("нет", "-", "0", ""): data["notes"].append("Покрытие ножевых разъёмов: " + val)');
-    sb.writeln(r'        elif "вариант мпп" in lbl and val.lower() not in ("нет", "-", ""): data["notes"].append("Вариант МПП: " + val)');
-    sb.writeln(r'        elif "переходные отверстия" in lbl and val.lower() not in ("нет", "-", ""): data["notes"].append("Переходные отверстия: " + val)');
-    sb.writeln(r'        elif "электроконтрол" in lbl: data["electro_test"] = ("нет" not in val.lower())');
-    sb.writeln(r'        elif "обработки контура" in lbl: data["contour"] = val.lower()');
-    sb.writeln(r'    # Убираем дубли из notes');
-    sb.writeln(r'    seen = set()');
-    sb.writeln(r'    uniq_notes = []');
-    sb.writeln(r'    for n in data["notes"]:');
-    sb.writeln(r'        if n not in seen:');
-    sb.writeln(r'            seen.add(n)');
-    sb.writeln(r'            uniq_notes.append(n)');
-    sb.writeln(r'    data["notes"] = uniq_notes');
-    sb.writeln(r'    open(OUT_JSON, "w", encoding="utf-8").write(json.dumps(data, ensure_ascii=False))');
+    sb.writeln(r'            lbl = ne[1].lower()');
+    sb.writeln(r'            vals = ne[2:]');
+    sb.writeln(r'        if ("размеры платы" in lbl or "точные размеры" in lbl or "имя файла" in lbl) and len(vals) > num_boards:');
+    sb.writeln(r'            num_boards = min(len(vals), 12)');
+    sb.writeln(r'    boards = [{"notes": list(global_notes)} for _ in range(num_boards)]');
+    sb.writeln(r'    if global_material:');
+    sb.writeln(r'        for b in boards: b["material"] = global_material');
+    sb.writeln(r'    for row in rows:');
+    sb.writeln(r'        ne = [x for x in row if x]');
+    sb.writeln(r'        if len(ne) < 2: continue');
+    sb.writeln(r'        lbl, vals = ne[0].lower(), ne[1:]');
+    sb.writeln(r'        if re.fullmatch(r"\d+\.?", lbl) and len(ne) >= 3:');
+    sb.writeln(r'            lbl, vals = ne[1].lower(), ne[2:]');
+    sb.writeln(r'        if "заказчик" in lbl and "название" in lbl:');
+    sb.writeln(r'            customer = vals[0]');
+    sb.writeln(r'            for b in boards: b["customer"] = customer');
+    sb.writeln(r'            continue');
+    sb.writeln(r'        for idx in range(num_boards):');
+    sb.writeln(r'            val = vals[idx] if idx < len(vals) else vals[0]');
+    sb.writeln(r'            b = boards[idx]');
+    sb.writeln(r'            if "тип заказа" in lbl: b["order_type"] = "Повтор" if "повтор" in val.lower() else "Новый"');
+    sb.writeln(r'            elif "имя файла" in lbl: b["board_name"] = clean_num_str(val)');
+    sb.writeln(r'            elif "количество плат" in lbl:');
+    sb.writeln(r'                m = re.search(r"(\d+)", val)');
+    sb.writeln(r'                if m: b["qty"] = int(m.group(1))');
+    sb.writeln(r'            elif "размеры платы" in lbl or "точные размеры" in lbl:');
+    sb.writeln(r'                m = re.search(r"(\d+(?:[.,]\d+)?)\s*[xхXХ*]\s*(\d+(?:[.,]\d+)?)", val)');
+    sb.writeln(r'                if m:');
+    sb.writeln(r'                    b["width"] = float(m.group(1).replace(",", "."))');
+    sb.writeln(r'                    b["height"] = float(m.group(2).replace(",", "."))');
+    sb.writeln(r'            elif "количество слоев" in lbl or "количество слоёв" in lbl:');
+    sb.writeln(r'                m = re.search(r"(\d+)", val)');
+    sb.writeln(r'                if m: b["layers"] = int(m.group(1))');
+    sb.writeln(r'            elif "толщина платы" in lbl:');
+    sb.writeln(r'                m = re.search(r"(\d+(?:[.,]\d+)?)", val)');
+    sb.writeln(r'                if m: b["thickness"] = m.group(1).replace(",", ".")');
+    sb.writeln(r'            elif "толщина фольги" in lbl:');
+    sb.writeln(r'                m = re.search(r"(\d+)", val)');
+    sb.writeln(r'                if m: b["foil"] = m.group(1)');
+    sb.writeln(r'            elif "паяльная маска" in lbl: b["mask_side"] = val');
+    sb.writeln(r'            elif "маркировка" in lbl: b["silk_side"] = val');
+    sb.writeln(r'            elif "покрыт" in lbl and "ножев" not in lbl and "разъем" not in lbl and "разъём" not in lbl:');
+    sb.writeln(r'                b["finish"] = val');
+    sb.writeln(r'            elif "ножевых" in lbl and val.lower() not in ("нет", "-", "0", "", "отсутствует", "отсутствуют"):');
+    sb.writeln(r'                b["notes"].append("Покрытие ножевых разъёмов: " + val)');
+    sb.writeln(r'            elif "вариант мпп" in lbl and val.lower() not in ("нет", "-", "", "отсутствует"):');
+    sb.writeln(r'                b["notes"].append("Вариант МПП: " + val)');
+    sb.writeln(r'            elif "переходные отверстия" in lbl and val.lower() not in ("нет", "-", ""):');
+    sb.writeln(r'                b["notes"].append("Переходные отверстия: " + val)');
+    sb.writeln(r'            elif "электроконтрол" in lbl: b["electro_test"] = ("нет" not in val.lower())');
+    sb.writeln(r'            elif "обработки контура" in lbl: b["contour"] = val.lower()');
+    sb.writeln(r'    for b in boards:');
+    sb.writeln(r'        seen = set()');
+    sb.writeln(r'        u = []');
+    sb.writeln(r'        for n in b["notes"]:');
+    sb.writeln(r'            if n not in seen:');
+    sb.writeln(r'                seen.add(n)');
+    sb.writeln(r'                u.append(n)');
+    sb.writeln(r'        b["notes"] = u');
+    sb.writeln(r'    open(OUT_JSON, "w", encoding="utf-8").write(json.dumps({"ok": True, "boards": boards}, ensure_ascii=False))');
     sb.writeln(r'if __name__ == "__main__": main()');
     return sb.toString();
   }
@@ -412,7 +552,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       if (outJson.existsSync()) {
         final raw = await outJson.readAsString(encoding: utf8);
         final parsed = jsonDecode(raw) as Map<String, dynamic>;
-        if (parsed['ok'] == true) return parsed;
+        if (parsed['ok'] == true && parsed['boards'] is List && (parsed['boards'] as List).isNotEmpty) {
+          return parsed['boards'] as List<dynamic>;
+        }
       }
     } catch (_) {}
     return null;
@@ -892,25 +1034,29 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       detectedWidth ??= fallbackCopperWidth;
       detectedHeight ??= fallbackCopperHeight;
 
-      Map<String, dynamic>? blankData;
+      List<dynamic> parsedBoards = [];
       if (foundExcelPath != null) {
-        final rawBlank = await _parseElectroconnectExcelBlank(foundExcelPath);
-        if (rawBlank is Map<String, dynamic>) {
-          blankData = rawBlank;
+        final rawBoards = await _parseElectroconnectExcelBlank(foundExcelPath);
+        if (rawBoards is List) {
+          parsedBoards = rawBoards;
         }
       }
 
-      if (blankData != null) {
-        if (detectedWidth == null && blankData['width'] != null) {
-          detectedWidth = (blankData['width'] as num).toDouble();
+      final Map<String, dynamic>? firstBoard = parsedBoards.isNotEmpty
+          ? (parsedBoards.first as Map<String, dynamic>)
+          : null;
+
+      if (firstBoard != null) {
+        if (detectedWidth == null && firstBoard['width'] != null) {
+          detectedWidth = (firstBoard['width'] as num).toDouble();
         }
-        if (detectedHeight == null && blankData['height'] != null) {
-          detectedHeight = (blankData['height'] as num).toDouble();
+        if (detectedHeight == null && firstBoard['height'] != null) {
+          detectedHeight = (firstBoard['height'] as num).toDouble();
         }
       }
 
-      final int finalLayersCount = (blankData != null && blankData['layers'] != null)
-          ? (blankData['layers'] as num).toInt()
+      final int finalLayersCount = (firstBoard != null && firstBoard['layers'] != null)
+          ? (firstBoard['layers'] as num).toInt()
           : (copperLayers > 0 ? copperLayers : 2);
 
       final projectTitle = archiveName.replaceAll(RegExp(r'\.(zip|rar)$', caseSensitive: false), '');
@@ -928,7 +1074,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         hasBinaryBrdOnly: hasBinaryBrd && !hasTextContour && detectedWidth == null,
         hasCadSourceOnly: hasCadSourceOnly && copperLayers == 0,
         hasNestedArchive: hasUnpackedNestedArchive,
-        parsedFromOrderBlank: blankData != null,
+        parsedFromOrderBlank: firstBoard != null,
         widthMm: detectedWidth,
         heightMm: detectedHeight,
         minTrackMm: minTrackMm,
@@ -941,6 +1087,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         _resetAllFieldsToDefault(showToast: false);
 
         _analysis = resultObj;
+        _blankBoardsList = parsedBoards;
+        _selectedBoardIdx = 0;
         _orderNameController.text = projectTitle;
         _layersCount = finalLayersCount;
 
@@ -963,81 +1111,17 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
             ? 'С двух сторон'
             : ((hasTopSilk || hasBottomSilk) ? 'С одной стороны' : 'Без маркировки');
 
-        if (blankData != null) {
-          if (blankData['customer'] != null && blankData['customer'].toString().isNotEmpty) {
-            _customerController.text = blankData['customer'].toString();
-          }
-          if (blankData['board_name'] != null && blankData['board_name'].toString().isNotEmpty) {
-            _orderNameController.text = '$projectTitle (${blankData['board_name']})';
-          }
-          if (blankData['order_type'] != null) {
-            _orderType = blankData['order_type'].toString();
-          }
-          if (blankData['qty'] != null) {
-            _qtyController.text = blankData['qty'].toString();
-          }
-          if (blankData['material'] != null) {
-            _material = blankData['material'].toString();
-          }
-          if (blankData['thickness'] != null) {
-            const validThick = ['0.5', '0.8', '1.0', '1.5', '2.0', '2.5', '3.0'];
-            final tStr = blankData['thickness'].toString();
-            if (validThick.contains(tStr)) _thickness = tStr;
-          }
-          if (blankData['foil'] != null) {
-            const validFoil = ['12', '18', '35', '50', '70', '105'];
-            final fStr = blankData['foil'].toString();
-            if (validFoil.contains(fStr)) _foil = fStr;
-          }
-          if (blankData['mask_side'] != null) {
-            final ms = blankData['mask_side'].toString().toLowerCase();
-            if (ms.contains('двух')) {
-              _maskSide = 'С двух сторон';
-            } else if (ms.contains('одной')) {
-              _maskSide = 'С одной стороны';
-            } else if (ms.contains('без')) {
-              _maskSide = 'Без маски';
-            }
-          }
-          if (blankData['silk_side'] != null) {
-            final ss = blankData['silk_side'].toString().toLowerCase();
-            if (ss.contains('двух')) {
-              _silkSide = 'С двух сторон';
-            } else if (ss.contains('одной')) {
-              _silkSide = 'С одной стороны';
-            } else if (ss.contains('без')) {
-              _silkSide = 'Без маркировки';
-            }
-          }
-          if (blankData['finish'] != null) {
-            final fin = blankData['finish'].toString().toLowerCase();
-            if (fin.contains('иммерс') || fin.contains('золот') || fin.contains('enig')) {
-              _finish = 'Иммерсионное золото';
-            } else if (fin.contains('олов')) {
-              _finish = 'Иммерсионное олово';
-            } else if (fin.contains('без')) {
-              _finish = 'Без покрытия';
-            } else {
-              _finish = 'HAL';
-            }
-          }
-          if (blankData['contour'] != null) {
-            final cnt = blankData['contour'].toString().toLowerCase();
-            if (cnt.contains('скрайб')) _contour = 'скрайбирование';
-          }
-          if (blankData['electro_test'] != null) {
-            _electroTest = blankData['electro_test'] == true;
-          }
-          if (blankData['notes'] is List && (blankData['notes'] as List).isNotEmpty) {
-            _notesController.text = (blankData['notes'] as List).join('; ');
-          }
+        if (firstBoard != null) {
+          _applyBoardFromBlank(firstBoard, projectTitle);
+        } else {
+          _recalculateTariffFromSpecs(force: true);
         }
-
-        _recalculateTariffFromSpecs(force: true);
       });
 
-      if (blankData != null) {
-        _showSnack('Все параметры (включая покрытие и материал) загружены из Excel!');
+      if (parsedBoards.length > 1) {
+        _showSnack('В бланке найдено ${parsedBoards.length} плат — переключайтесь между ними сверху!');
+      } else if (firstBoard != null) {
+        _showSnack('Все параметры (включая покрытие, материал и примечания) загружены из Excel!');
       } else if (hasUnpackedNestedArchive) {
         _showSnack('Не удалось распаковать вложенный .RAR — укажите X и Y вручную.');
       } else if (detectedWidth == null) {
@@ -1351,6 +1435,104 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     await OpenFilex.open(outPath);
   }
 
+  Future<void> _exportCombinedAllBoardsTzFile() async {
+    if (_blankBoardsList.isEmpty) return;
+
+    final sb = StringBuffer();
+    final baseTitle = _analysis?.projectTitle ?? 'Комплект_плат';
+    sb.writeln('====================================================================');
+    sb.writeln('СВОДНОЕ ТЗ ПО ВСЕМ ПЛАТАМ ЗАКАЗА (ООО «ЭЛЕКТРОконнект»)');
+    sb.writeln('Проект: $baseTitle • Позиций в бланке: ${_blankBoardsList.length}');
+    sb.writeln('====================================================================');
+    sb.writeln('Дата формирования: ${DateTime.now().toString().substring(0, 16)}');
+    if (_customerController.text.trim().isNotEmpty) {
+      sb.writeln('Заказчик:          ${_customerController.text.trim()}');
+    }
+    sb.writeln('');
+
+    double grandTotalWithVat = 0.0;
+    double grandTotalAreaDm2 = 0.0;
+
+    for (int i = 0; i < _blankBoardsList.length; i++) {
+      final b = _blankBoardsList[i] as Map<String, dynamic>;
+      final bName = b['board_name']?.toString().trim() ?? 'Позиция ${i + 1}';
+      final w = (b['width'] as num?)?.toDouble() ?? 0.0;
+      final h = (b['height'] as num?)?.toDouble() ?? 0.0;
+      final qty = (b['qty'] as num?)?.toInt() ?? 10;
+      final layers = (b['layers'] as num?)?.toInt() ?? 2;
+      final mat = b['material']?.toString() ?? 'FR4';
+      final thick = b['thickness']?.toString() ?? '1.5';
+      final foil = b['foil']?.toString() ?? '18';
+      final oType = b['order_type']?.toString() ?? 'Новый';
+
+      String fin = 'HAL';
+      final rawFin = (b['finish']?.toString() ?? '').toLowerCase();
+      if (rawFin.contains('иммерс') || rawFin.contains('золот') || rawFin.contains('enig')) {
+        fin = 'Иммерсионное золото';
+      } else if (rawFin.contains('олов')) {
+        fin = 'Иммерсионное олово';
+      } else if (rawFin.contains('без')) {
+        fin = 'Без покрытия';
+      }
+
+      String maskSide = 'С двух сторон';
+      final rawMask = (b['mask_side']?.toString() ?? '').toLowerCase();
+      if (rawMask.contains('одной') || rawMask.contains('верх') || rawMask.contains('низ')) {
+        maskSide = 'С одной стороны';
+      } else if (rawMask.contains('без') || rawMask.contains('нет')) {
+        maskSide = 'Без маски';
+      }
+
+      String silkSide = 'С двух сторон';
+      final rawSilk = (b['silk_side']?.toString() ?? '').toLowerCase();
+      if (rawSilk.contains('одной') || rawSilk.contains('верх') || rawSilk.contains('низ')) {
+        silkSide = 'С одной стороны';
+      } else if (rawSilk.contains('без') || rawSilk.contains('нет')) {
+        silkSide = 'Без маркировки';
+      }
+
+      final rates = _computeRatesForSpecs(
+        layers: layers,
+        material: mat,
+        foil: foil,
+        finish: fin,
+        maskColor: 'Зеленая',
+        maskSide: maskSide,
+        orderType: oType,
+      );
+
+      final singleDm2 = (w * h) / 10000.0;
+      final totalDm2 = singleDm2 * math.max(qty, 1);
+      final pureSum = (w > 0 && h > 0) ? ((totalDm2 * rates.dm2Rate) + rates.setupFee) : 0.0;
+      final totalWithVat = pureSum * 1.22;
+
+      grandTotalWithVat += totalWithVat;
+      grandTotalAreaDm2 += totalDm2;
+
+      sb.writeln('--- ПОЗИЦИЯ ${i + 1}: $bName ---');
+      sb.writeln('• Параметры: $oType; $layers сл; ${w.toStringAsFixed(1)}x${h.toStringAsFixed(1)}мм; $mat-$thickмм-$foilмкм; маска: $maskSide; марк: $silkSide; $fin');
+      sb.writeln('• Тираж:     $qty шт. (площадь партии: ${totalDm2.toStringAsFixed(2)} дм²)');
+      sb.writeln('• Стоимость: ${totalWithVat.toStringAsFixed(2)} руб. с НДС (тариф ${rates.dm2Rate.toStringAsFixed(0)} р/дм² + подготовка ${rates.setupFee.toStringAsFixed(0)} р)');
+      if (b['notes'] is List && (b['notes'] as List).isNotEmpty) {
+        sb.writeln('• Примечания: ${(b['notes'] as List).join('; ')}');
+      }
+      sb.writeln('');
+    }
+
+    sb.writeln('====================================================================');
+    sb.writeln('ИТОГО ПО ВСЕМУ КОМПЛЕКТУ (${_blankBoardsList.length} поз.):');
+    sb.writeln('• Общая площадь партии: ${grandTotalAreaDm2.toStringAsFixed(2)} дм²');
+    sb.writeln('• ОБЩАЯ СУММА С НДС:    ${grandTotalWithVat.toStringAsFixed(2)} руб.');
+    sb.writeln('====================================================================');
+
+    final dirPath = _analysis?.archiveDir ?? (await getApplicationDocumentsDirectory()).path;
+    final safeTitle = baseTitle.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+    final outPath = '$dirPath${Platform.pathSeparator}Сводное_ТЗ_$safeTitle.txt';
+    await File(outPath).writeAsString(sb.toString(), encoding: utf8);
+    _showSnack('Сводное ТЗ по всем платам сохранено: $outPath');
+    await OpenFilex.open(outPath);
+  }
+
   void _copyClientEmailTemplate(double totalWithVat, double totalDm2) {
     final title = _orderNameController.text.trim().isEmpty ? 'платы' : _orderNameController.text.trim();
     final qty = _qtyController.text.trim();
@@ -1539,6 +1721,53 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                     ],
                   ),
                 ),
+                if (_blankBoardsList.length > 1) ...[
+                  const SizedBox(height: 12),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0284C7).withOpacity(0.12),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: const Color(0xFF0284C7).withOpacity(0.35)),
+                    ),
+                    child: Wrap(
+                      spacing: 10,
+                      runSpacing: 8,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        Text('В бланке ${_blankBoardsList.length} плат:', style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
+                        for (int i = 0; i < _blankBoardsList.length; i++)
+                          ChoiceChip(
+                            label: Text(
+                              'Плата ${i + 1}: ${(_blankBoardsList[i] as Map<String, dynamic>)['board_name'] ?? 'Позиция ${i + 1}'}',
+                              style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
+                            ),
+                            selected: _selectedBoardIdx == i,
+                            onSelected: (_) {
+                              setState(() {
+                                _selectedBoardIdx = i;
+                                _applyBoardFromBlank(
+                                  _blankBoardsList[i] as Map<String, dynamic>,
+                                  _analysis?.projectTitle ?? '',
+                                );
+                              });
+                            },
+                          ),
+                        ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: const Color(0xFF0D9488),
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          ),
+                          icon: const Icon(Icons.summarize_outlined, size: 16),
+                          label: const Text('Сводное ТЗ (все платы)', style: TextStyle(fontSize: 12)),
+                          onPressed: _exportCombinedAllBoardsTzFile,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
                 const SizedBox(height: 18),
                 Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -1674,7 +1903,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                   ),
                                 ),
                                 const SizedBox(width: 10),
-                                Expanded(child: _dropdownField(label: 'Толщина, мм', value: _thickness, items: const ['0.5', '0.8', '1.0', '1.5', '2.0', '2.5', '3.0'], onChanged: (v) => setState(() => _thickness = v!))),
+                                Expanded(child: _dropdownField(label: 'Толщина, мм', value: _thickness, items: const ['0.5', '0.8', '1.0', '1.5', '1.6', '2.0', '2.5', '3.0'], onChanged: (v) => setState(() => _thickness = v!))),
                                 const SizedBox(width: 10),
                                 Expanded(
                                   child: _dropdownField(
@@ -1845,9 +2074,11 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                       borderRadius: BorderRadius.circular(10),
                                       border: Border.all(color: const Color(0xFF10B981).withOpacity(0.45)),
                                     ),
-                                    child: const Text(
-                                      'Параметры (заказчик, размеры X/Y, тираж, слои, толщина, покрытие и примечания) автоматически считаны из бланка заказа Excel!',
-                                      style: TextStyle(fontSize: 12),
+                                    child: Text(
+                                      _blankBoardsList.length > 1
+                                          ? 'Из бланка заказа Excel загружено плат: ${_blankBoardsList.length} шт. Переключайтесь между ними в панели сверху!'
+                                          : 'Параметры (заказчик, размеры X/Y, тираж, слои, толщина, покрытие и примечания) автоматически считаны из бланка заказа Excel!',
+                                      style: const TextStyle(fontSize: 12),
                                     ),
                                   ),
                                 if (_analysis?.hasNestedArchive == true)
