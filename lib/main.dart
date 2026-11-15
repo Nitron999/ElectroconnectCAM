@@ -176,6 +176,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   String? _webPriceDetails;
 
   String _orderType = 'Новый';
+  String _urgency = 'Серийный';
   int _layersCount = 2;
   String _material = 'FR4';
   String _thickness = '1.5';
@@ -211,6 +212,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     required String maskColor,
     required String maskSide,
     required String orderType,
+    required String urgency,
   }) {
     double dm2Rate;
     double setupFee;
@@ -266,6 +268,14 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       setupFee = 0.0;
     }
 
+    if (urgency == 'Экспресс') {
+      dm2Rate *= 1.50;
+      setupFee *= 1.50;
+    } else if (urgency == 'СуперЭкспресс') {
+      dm2Rate *= 2.00;
+      setupFee *= 2.00;
+    }
+
     return (dm2Rate: dm2Rate, setupFee: setupFee);
   }
 
@@ -280,6 +290,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       maskColor: _maskColor,
       maskSide: _maskSide,
       orderType: _orderType,
+      urgency: _urgency,
     );
 
     _basePriceDm2Controller.text = rates.dm2Rate.toStringAsFixed(1);
@@ -302,6 +313,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     _minHoleController.text = '0.30';
     _notesController.clear();
     _orderType = 'Новый';
+    _urgency = 'Серийный';
     _layersCount = 2;
     _material = 'FR4';
     _thickness = '1.5';
@@ -326,6 +338,13 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     });
   }
 
+  String _normalizeUrgency(String? raw) {
+    final u = (raw ?? '').toLowerCase();
+    if (u.contains('супер')) return 'СуперЭкспресс';
+    if (u.contains('экспресс')) return 'Экспресс';
+    return 'Серийный';
+  }
+
   void _applyBoardFromBlank(Map<String, dynamic> board, String baseTitle) {
     if (board['customer'] != null && board['customer'].toString().isNotEmpty) {
       _customerController.text = board['customer'].toString();
@@ -335,6 +354,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
 
     if (board['order_type'] != null) {
       _orderType = board['order_type'].toString();
+    }
+    if (board['urgency'] != null) {
+      _urgency = _normalizeUrgency(board['urgency'].toString());
     }
     if (board['width'] != null && board['height'] != null) {
       _widthController.text = (board['width'] as num).toDouble().toStringAsFixed(1);
@@ -492,6 +514,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     sb.writeln(r'            val = vals[idx] if idx < len(vals) else vals[0]');
     sb.writeln(r'            b = boards[idx]');
     sb.writeln(r'            if "тип заказа" in lbl: b["order_type"] = "Повтор" if "повтор" in val.lower() else "Новый"');
+    sb.writeln(r'            elif "срочность" in lbl or "вариант и срочность" in lbl:');
+    sb.writeln(r'                b["urgency"] = val');
     sb.writeln(r'            elif "имя файла" in lbl: b["board_name"] = clean_num_str(val)');
     sb.writeln(r'            elif "количество плат" in lbl:');
     sb.writeln(r'                m = re.search(r"(\d+)", val)');
@@ -610,6 +634,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     sb.writeln('MASK_SIDE = "$_maskSide"');
     sb.writeln('FINISH = "$_finish"');
     sb.writeln('ORDER_TYPE = "$_orderType"');
+    sb.writeln('URGENCY = "$_urgency"');
     sb.writeln('OUT_JSON = r"$outJsonPath"');
     sb.writeln(r'def fill_ctx(ctx, kws, val):');
     sb.writeln(r'    inputs = ctx.locator("input:not([type=hidden]):not([type=radio]):not([type=checkbox]):not([type=submit]):not([type=button])")');
@@ -677,6 +702,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     sb.writeln(r'                fill_ctx(c, ["количество", "тираж", "qty", "шт"], QTY)');
     sb.writeln(r'                select_or_click(c, [THICKNESS + " мм", THICKNESS])');
     sb.writeln(r'                if ORDER_TYPE == "Повтор": select_or_click(c, ["Повтор"])');
+    sb.writeln(r'                if URGENCY == "СуперЭкспресс": select_or_click(c, ["Суперэкспресс", "Супер экспресс", "Экспресс"])');
+    sb.writeln(r'                elif URGENCY == "Экспресс": select_or_click(c, ["Экспресс", "Срочн"])');
     sb.writeln(r'                if MASK_SIDE == "Без маски": select_or_click(c, ["Без маски"])');
     sb.writeln(r'                if "золото" in FINISH.lower(): select_or_click(c, ["Иммерсионное золото", "Иммерс", "ENIG"])');
     sb.writeln(r'                elif "олово" in FINISH.lower(): select_or_click(c, ["Иммерсионное олово"])');
@@ -708,7 +735,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     sb.writeln(r'                found.sort(key=lambda x: x[0])');
     sb.writeln(r'                res["ok"] = True');
     sb.writeln(r'                res["price"] = found[-1][1] + " руб."');
-    sb.writeln(r'                res["raw"] = "Считано со страницы pselectro.ru"');
+    sb.writeln(r'                res["raw"] = "Считано со страницы pselectro.ru (" + URGENCY + ")"');
     sb.writeln(r'            else:');
     sb.writeln(r'                res["error"] = "На странице pselectro.ru форма расчёта требует отправки файлов менеджеру (онлайн-цена не отображается)."');
     sb.writeln(r'            page.wait_for_timeout(2500)');
@@ -738,7 +765,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     setState(() {
       _isFetchingWebPrice = true;
       _webPriceResult = null;
-      _webPriceDetails = 'Открываю pselectro.ru/calculate-cost/ и заполняю форму...';
+      _webPriceDetails = 'Открываю pselectro.ru/calculate-cost/ и заполняю форму ($_urgency)...';
     });
 
     try {
@@ -1119,9 +1146,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       });
 
       if (parsedBoards.length > 1) {
-        _showSnack('В бланке найдено ${parsedBoards.length} плат — переключайтесь между ними сверху!');
+        _showSnack('В бланке найдено ${parsedBoards.length} плат (срочность: $_urgency) — переключайтесь сверху!');
       } else if (firstBoard != null) {
-        _showSnack('Все параметры (включая покрытие, материал и примечания) загружены из Excel!');
+        _showSnack('Параметры загружены из Excel (срочность: $_urgency)!');
       } else if (hasUnpackedNestedArchive) {
         _showSnack('Не удалось распаковать вложенный .RAR — укажите X и Y вручную.');
       } else if (detectedWidth == null) {
@@ -1349,7 +1376,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     final silkPart = _silkSide == 'Без маркировки' ? 'Без маркировки' : '$_silkSide $_silkColor';
     final testPart = _electroTest ? 'Эл. тест.' : 'Без эл. теста.';
 
-    return '$_orderType; $_layersCount сл; ${w}х${h}мм; $_contour; '
+    return '$_orderType ($_urgency); $_layersCount сл; ${w}х${h}мм; $_contour; '
         '$_material-${_thickness}мм-${_foil}мкм; '
         'маска: $maskPart; маркировка: $silkPart; $_finish; $testPart';
   }
@@ -1378,7 +1405,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       sb.writeln('Заказчик:          ${_customerController.text.trim()}');
     }
     sb.writeln('Обозначение платы: ${_orderNameController.text.trim().isEmpty ? "Без названия" : _orderNameController.text.trim()}');
-    sb.writeln('Тип заказа:        $_orderType');
+    sb.writeln('Тип / срочность:   $_orderType • $_urgency');
     sb.writeln('Тираж:             $qty шт. (площадь 1 шт: ${singleDm2.toStringAsFixed(3)} дм², партия: ${totalDm2.toStringAsFixed(2)} дм²)');
     sb.writeln('--------------------------------------------------------------------');
     sb.writeln('РАСЧЕТ СТОИМОСТИ:');
@@ -1464,6 +1491,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       final thick = b['thickness']?.toString() ?? '1.5';
       final foil = b['foil']?.toString() ?? '18';
       final oType = b['order_type']?.toString() ?? 'Новый';
+      final urg = _normalizeUrgency(b['urgency']?.toString());
 
       String fin = 'HAL';
       final rawFin = (b['finish']?.toString() ?? '').toLowerCase();
@@ -1499,6 +1527,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         maskColor: 'Зеленая',
         maskSide: maskSide,
         orderType: oType,
+        urgency: urg,
       );
 
       final singleDm2 = (w * h) / 10000.0;
@@ -1510,7 +1539,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       grandTotalAreaDm2 += totalDm2;
 
       sb.writeln('--- ПОЗИЦИЯ ${i + 1}: $bName ---');
-      sb.writeln('• Параметры: $oType; $layers сл; ${w.toStringAsFixed(1)}x${h.toStringAsFixed(1)}мм; $mat-$thickмм-$foilмкм; маска: $maskSide; марк: $silkSide; $fin');
+      sb.writeln('• Параметры: $oType ($urg); $layers сл; ${w.toStringAsFixed(1)}x${h.toStringAsFixed(1)}мм; $mat-$thickмм-$foilмкм; маска: $maskSide; марк: $silkSide; $fin');
       sb.writeln('• Тираж:     $qty шт. (площадь партии: ${totalDm2.toStringAsFixed(2)} дм²)');
       sb.writeln('• Стоимость: ${totalWithVat.toStringAsFixed(2)} руб. с НДС (тариф ${rates.dm2Rate.toStringAsFixed(0)} р/дм² + подготовка ${rates.setupFee.toStringAsFixed(0)} р)');
       if (b['notes'] is List && (b['notes'] as List).isNotEmpty) {
@@ -1538,7 +1567,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     final qty = _qtyController.text.trim();
     final priceLine = _webPriceResult != null
         ? '• Стоимость партии по калькулятору сайта: $_webPriceResult'
-        : '• Предварительная стоимость партии с учетом НДС 22%: ${totalWithVat.toStringAsFixed(2)} руб.';
+        : '• Предварительная стоимость партии с учетом НДС 22% (срочность: $_urgency): ${totalWithVat.toStringAsFixed(2)} руб.';
 
     final text = 'Здравствуйте!\n'
         'Благодарим за обращение на завод «ЭЛЕКТРОконнект».\n\n'
@@ -1804,9 +1833,17 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                   ),
                                 ),
                                 const SizedBox(width: 10),
-                                Expanded(child: _inputField(controller: _widthController, label: 'Длина X, мм', keyboardType: TextInputType.number)),
-                                const SizedBox(width: 10),
-                                Expanded(child: _inputField(controller: _heightController, label: 'Ширина Y, мм', keyboardType: TextInputType.number)),
+                                Expanded(
+                                  child: _dropdownField(
+                                    label: 'Срочность',
+                                    value: _urgency,
+                                    items: const ['Серийный', 'Экспресс', 'СуперЭкспресс'],
+                                    onChanged: (v) => setState(() {
+                                      _urgency = v!;
+                                      _recalculateTariffFromSpecs();
+                                    }),
+                                  ),
+                                ),
                                 const SizedBox(width: 10),
                                 Expanded(child: _inputField(controller: _qtyController, label: 'Тираж, шт.', keyboardType: TextInputType.number)),
                               ],
@@ -1814,6 +1851,10 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                             const SizedBox(height: 12),
                             Row(
                               children: [
+                                Expanded(child: _inputField(controller: _widthController, label: 'Длина X, мм', keyboardType: TextInputType.number)),
+                                const SizedBox(width: 10),
+                                Expanded(child: _inputField(controller: _heightController, label: 'Ширина Y, мм', keyboardType: TextInputType.number)),
+                                const SizedBox(width: 10),
                                 Expanded(child: _inputField(controller: _basePriceDm2Controller, label: 'Цена за 1 дм², руб.', keyboardType: TextInputType.number, isPriceField: true)),
                                 const SizedBox(width: 10),
                                 Expanded(child: _inputField(controller: _setupFeeController, label: 'Подготовка, руб.', keyboardType: TextInputType.number, isPriceField: true)),
@@ -1842,7 +1883,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                     children: [
                                       Text(
-                                        hasValidDimensions ? 'Локальный расчёт с НДС (22%):' : 'Укажите длину X и ширину Y для расчёта цены:',
+                                        hasValidDimensions ? 'Локальный расчёт ($_urgency) с НДС 22%:' : 'Укажите длину X и ширину Y для расчёта цены:',
                                         style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: _subtleText),
                                       ),
                                       Text(
@@ -2076,8 +2117,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     ),
                                     child: Text(
                                       _blankBoardsList.length > 1
-                                          ? 'Из бланка заказа Excel загружено плат: ${_blankBoardsList.length} шт. Переключайтесь между ними в панели сверху!'
-                                          : 'Параметры (заказчик, размеры X/Y, тираж, слои, толщина, покрытие и примечания) автоматически считаны из бланка заказа Excel!',
+                                          ? 'Из бланка заказа Excel загружено плат: ${_blankBoardsList.length} шт. (срочность: $_urgency). Переключайтесь между ними сверху!'
+                                          : 'Параметры (включая срочность «$_urgency», размеры X/Y, тираж, слои, покрытие и примечания) считаны из Excel!',
                                       style: const TextStyle(fontSize: 12),
                                     ),
                                   ),
