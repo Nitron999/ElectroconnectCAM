@@ -87,7 +87,7 @@ class GerberAnalysisResult {
   final String archiveName;
   final String archiveDir;
   final String projectTitle;
-  final List<GerberLayerInfo> layers;
+  final List layers;
   final int detectedLayersCount;
   final bool hasTopMask;
   final bool hasBottomMask;
@@ -102,7 +102,7 @@ class GerberAnalysisResult {
   final double? minTrackMm;
   final double? minDrillMm;
   final int totalHoles;
-  final Map<double, int> drillToolsBreakdown;
+  final Map drillToolsBreakdown;
 
   GerberAnalysisResult({
     required this.archiveName,
@@ -155,7 +155,7 @@ class CamWorkspaceScreen extends StatefulWidget {
 
 class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   GerberAnalysisResult? _analysis;
-  List<dynamic> _blankBoardsList = [];
+  List _blankBoardsList = [];
   int _selectedBoardIdx = 0;
 
   final TextEditingController _customerController = TextEditingController();
@@ -320,7 +320,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     if (_blankBoardsList.isEmpty || _selectedBoardIdx < 0 || _selectedBoardIdx >= _blankBoardsList.length) {
       return;
     }
-    final current = Map<String, dynamic>.from(_blankBoardsList[_selectedBoardIdx] as Map<String, dynamic>);
+    final current = Map<String, dynamic>.from(_blankBoardsList[_selectedBoardIdx] as Map);
     final w = double.tryParse(_widthController.text.replaceAll(',', '.')) ?? 0.0;
     final h = double.tryParse(_heightController.text.replaceAll(',', '.')) ?? 0.0;
     final qty = int.tryParse(_qtyController.text.trim()) ?? 10;
@@ -392,7 +392,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     return 'Серийный';
   }
 
-  void _applyBoardFromBlank(Map<String, dynamic> board, String baseTitle) {
+  void _applyBoardFromBlank(Map board, String baseTitle) {
     if (board['customer'] != null && board['customer'].toString().isNotEmpty) {
       _customerController.text = board['customer'].toString();
     }
@@ -543,7 +543,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   }
 
   String _buildDocParserPythonCode() {
-    const lines = <String>[
+    const lines = [
       r'# -*- coding: utf-8 -*-',
       r'import json, re, subprocess, sys',
       r'DOC_PATH = sys.argv[1]',
@@ -839,9 +839,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
 
       if (outJson.existsSync()) {
         final raw = await outJson.readAsString(encoding: utf8);
-        final parsed = jsonDecode(raw) as Map<String, dynamic>;
+        final parsed = jsonDecode(raw) as Map;
         if (parsed['ok'] == true && parsed['boards'] is List && (parsed['boards'] as List).isNotEmpty) {
-          return parsed['boards'] as List<dynamic>;
+          return parsed['boards'] as List;
         }
       }
     } catch (_) {}
@@ -885,7 +885,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   }
 
   String _buildPlaywrightCalcPythonCode(double w, double h, int qty, String outJsonPath) {
-    final lines = <String>[
+    final lines = [
       r'# -*- coding: utf-8 -*-',
       r'import json, re',
       r'from playwright.sync_api import sync_playwright',
@@ -1048,7 +1048,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
 
       if (resultFile.existsSync()) {
         final jsonStr = await resultFile.readAsString(encoding: utf8);
-        final data = jsonDecode(jsonStr) as Map<String, dynamic>;
+        final data = jsonDecode(jsonStr) as Map;
         if (data['ok'] == true && (data['price']?.toString().isNotEmpty ?? false)) {
           setState(() {
             _webPriceResult = data['price'].toString();
@@ -1077,10 +1077,10 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     }
   }
 
-  Future<String> _saveTempBytes(Directory dir, String rawFileName, List<int> fileBytes) async {
+  Future<String> _saveTempBytes(Directory dir, String rawFileName, List fileBytes) async {
     final safeName = rawFileName.replaceAll(RegExp(r'[^\w.\-]+'), '_');
     final outFile = File('${dir.path}${Platform.pathSeparator}${DateTime.now().microsecondsSinceEpoch}_$safeName');
-    await outFile.writeAsBytes(fileBytes);
+    await outFile.writeAsBytes(fileBytes.cast<int>());
     return outFile.path;
   }
 
@@ -1101,7 +1101,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       final sessionUnpackDir = Directory('${tempRoot.path}${Platform.pathSeparator}cam_session_${DateTime.now().millisecondsSinceEpoch}');
       sessionUnpackDir.createSync(recursive: true);
 
-      final List<dynamic> projectFiles = [];
+      final List projectFiles = [];
       bool hasUnpackedNestedArchive = false;
 
       if (lowSelected.endsWith('.xls') || lowSelected.endsWith('.xlsx') || lowSelected.endsWith('.pdf')) {
@@ -1135,16 +1135,16 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
           if (rawName.isEmpty || rawName.startsWith('.')) continue;
 
           final low = rawName.toLowerCase();
-          final fileBytes = file.content as List<int>;
+          final fileBytes = file.content as List;
 
           if (low.endsWith('.zip')) {
             try {
-              final innerArchive = ZipDecoder().decodeBytes(fileBytes);
+              final innerArchive = ZipDecoder().decodeBytes(fileBytes.cast<int>());
               for (final inner in innerArchive.files) {
                 if (!inner.isFile) continue;
                 final innerName = inner.name.split('/').last.split('\\').last;
                 if (innerName.isNotEmpty) {
-                  final iBytes = inner.content as List<int>;
+                  final iBytes = inner.content as List;
                   final p = await _saveTempBytes(sessionUnpackDir, innerName, iBytes);
                   projectFiles.add({'name': innerName, 'bytes': iBytes, 'savedPath': p});
                 }
@@ -1179,7 +1179,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         }
       }
 
-      final List<GerberLayerInfo> layers = [];
+      final List layers = [];
       int copperLayers = 0;
       bool hasTopMask = false;
       bool hasBottomMask = false;
@@ -1197,12 +1197,12 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       double? minTrackMm;
       double? minDrillMm;
       int totalHoles = 0;
-      final Map<double, int> drillBreakdown = {};
+      final Map drillBreakdown = {};
 
       for (final item in projectFiles) {
-        final pf = item as Map<String, dynamic>;
+        final pf = item as Map;
         final rawName = pf['name'] as String;
-        final fileBytes = pf['bytes'] as List<int>;
+        final fileBytes = (pf['bytes'] as List).cast<int>();
         final savedPath = pf['savedPath'] as String;
         final upper = rawName.toUpperCase();
         String role = 'Прочий файл проекта';
@@ -1307,10 +1307,12 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
           if (role.contains('Сверловка')) {
             final drillStats = _parseExcellonDrill(textContent);
             totalHoles += drillStats['totalHoles'] as int;
-            final tools = drillStats['tools'] as Map<double, int>;
+            final tools = drillStats['tools'] as Map;
             for (final entry in tools.entries) {
-              drillBreakdown[entry.key] = (drillBreakdown[entry.key] ?? 0) + entry.value;
-              if (minDrillMm == null || entry.key < minDrillMm) minDrillMm = entry.key;
+              final k = entry.key as double;
+              final v = entry.value as int;
+              drillBreakdown[k] = ((drillBreakdown[k] as int?) ?? 0) + v;
+              if (minDrillMm == null || k < minDrillMm) minDrillMm = k;
             }
           } else if (role.contains('меди') || role.contains('Контур') || upper.endsWith('.GBR') || upper.endsWith('.PHO')) {
             final gerberStats = _parseGerberGeometry(textContent);
@@ -1337,7 +1339,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       detectedWidth ??= fallbackCopperWidth;
       detectedHeight ??= fallbackCopperHeight;
 
-      List<dynamic> parsedBoards = [];
+      List parsedBoards = [];
       if (foundDocPath != null) {
         final rawBoards = await _parseDocumentBlank(foundDocPath);
         if (rawBoards is List) {
@@ -1345,8 +1347,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         }
       }
 
-      final Map<String, dynamic>? firstBoard = parsedBoards.isNotEmpty
-          ? (parsedBoards.first as Map<String, dynamic>)
+      final Map? firstBoard = parsedBoards.isNotEmpty
+          ? (parsedBoards.first as Map)
           : null;
 
       if (firstBoard != null && firstBoard['width'] != null && firstBoard['height'] != null) {
@@ -1433,10 +1435,10 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     }
   }
 
-  Map<String, dynamic> _parseExcellonDrill(String text) {
+  Map _parseExcellonDrill(String text) {
     final lines = text.split(RegExp(r'\r?\n'));
-    final Map<String, double> toolDiameters = {};
-    final Map<double, int> toolCounts = {};
+    final Map toolDiameters = {};
+    final Map toolCounts = {};
     bool isMetric = true;
     String? activeTool;
     int total = 0;
@@ -1463,15 +1465,15 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       }
 
       if ((line.startsWith('X') || line.startsWith('Y')) && activeTool != null && toolDiameters.containsKey(activeTool)) {
-        final diam = toolDiameters[activeTool]!;
-        toolCounts[diam] = (toolCounts[diam] ?? 0) + 1;
+        final diam = toolDiameters[activeTool] as double;
+        toolCounts[diam] = ((toolCounts[diam] as int?) ?? 0) + 1;
         total++;
       }
     }
     return {'totalHoles': total, 'tools': toolCounts};
   }
 
-  Map<String, double?> _parseGerberGeometry(String text) {
+  Map _parseGerberGeometry(String text) {
     final lines = text.split(RegExp(r'\r?\n'));
     bool isInch = false;
     int decDigits = 4;
@@ -1528,8 +1530,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     return {'widthMm': width, 'heightMm': height, 'minTrackMm': minAperture};
   }
 
-  List<DfmCheckItem> _evaluateElectroconnectDfm() {
-    final List<DfmCheckItem> checks = [];
+  List _evaluateElectroconnectDfm() {
+    final List checks = [];
     final w = double.tryParse(_widthController.text.replaceAll(',', '.')) ?? 0;
     final h = double.tryParse(_heightController.text.replaceAll(',', '.')) ?? 0;
     final track = double.tryParse(_minTrackController.text.replaceAll(',', '.')) ?? 0;
@@ -1699,11 +1701,11 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         ? 'ООО «Заказчик»'
         : _customerController.text.trim();
 
-    final itemsToRender = >[];
+    final List itemsToRender = [];
 
     if (_blankBoardsList.isNotEmpty) {
       for (int i = 0; i < _blankBoardsList.length; i++) {
-        final b = _blankBoardsList[i] as Map<String, dynamic>;
+        final b = _blankBoardsList[i] as Map;
         final bName = b['board_name']?.toString().trim() ?? 'Позиция ${i + 1}';
         final w = (b['width'] as num?)?.toDouble() ?? 0.0;
         final h = (b['height'] as num?)?.toDouble() ?? 0.0;
@@ -1794,7 +1796,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     double grandWithVat = 0;
     final rowsHtml = StringBuffer();
 
-    for (final it in itemsToRender) {
+    for (final rawItem in itemsToRender) {
+      final it = rawItem as Map;
       grandNoVat += it['sumNoVat'] as double;
       grandVat += it['vat'] as double;
       grandWithVat += it['totalWithVat'] as double;
@@ -1990,19 +1993,21 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     }
     sb.writeln('--------------------------------------------------------------------');
     sb.writeln('РЕЗУЛЬТАТ DFM-ПРОВЕРКИ (РЕГЛАМЕНТ ЭЛЕКТРОКОННЕКТ):');
-    for (final c in dfm) {
+    for (final rawC in dfm) {
+      final c = rawC as DfmCheckItem;
       final tag = c.level == 'error' ? '[КРИТИЧНО]' : (c.level == 'warn' ? '[ПРЕДЕЛ]' : '[OK]');
       sb.writeln('$tag ${c.title} — ${c.detail}');
     }
     if (_analysis != null) {
       sb.writeln('--------------------------------------------------------------------');
       sb.writeln('СОСТАВ АРХИВА (${_analysis!.archiveName}):');
-      for (final l in _analysis!.layers) {
+      for (final rawL in _analysis!.layers) {
+        final l = rawL as GerberLayerInfo;
         sb.writeln('• ${l.fileName} -> ${l.role}');
       }
       if (_analysis!.drillToolsBreakdown.isNotEmpty) {
         sb.writeln('Сверловка (всего ${_analysis!.totalHoles} отв.):');
-        final sorted = _analysis!.drillToolsBreakdown.entries.toList()..sort((a, b) => a.key.compareTo(b.key));
+        final sorted = _analysis!.drillToolsBreakdown.entries.toList()..sort((a, b) => (a.key as double).compareTo(b.key as double));
         for (final e in sorted) {
           sb.writeln('  - Ø ${e.key} мм: ${e.value} шт.');
         }
@@ -2038,7 +2043,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     double grandTotalAreaDm2 = 0.0;
 
     for (int i = 0; i < _blankBoardsList.length; i++) {
-      final b = _blankBoardsList[i] as Map<String, dynamic>;
+      final b = _blankBoardsList[i] as Map;
       final bName = b['board_name']?.toString().trim() ?? 'Позиция ${i + 1}';
       final w = (b['width'] as num?)?.toDouble() ?? 0.0;
       final h = (b['height'] as num?)?.toDouble() ?? 0.0;
@@ -2185,10 +2190,11 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   Widget _dropdownField({
     required String label,
     required String value,
-    required List<String> items,
-    required ValueChanged<String?> onChanged,
+    required List items,
+    required ValueChanged onChanged,
   }) {
-    final safeValue = items.contains(value) ? value : items.first;
+    final strItems = items.map((e) => e.toString()).toList();
+    final safeValue = strItems.contains(value) ? value : strItems.first;
     return DropdownButtonFormField<String>(
       value: safeValue,
       isExpanded: true,
@@ -2201,7 +2207,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: _borderCol)),
         contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
       ),
-      items: items.map((e) => DropdownMenuItem(value: e, child: Text(e, style: const TextStyle(fontSize: 13), overflow: TextOverflow.ellipsis))).toList(),
+      items: strItems.map((e) => DropdownMenuItem(value: e, child: Text(e, style: const TextStyle(fontSize: 13), overflow: TextOverflow.ellipsis))).toList(),
       onChanged: (v) {
         onChanged(v);
         _syncCurrentFormBackToBoardList();
@@ -2336,7 +2342,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                         for (int i = 0; i < _blankBoardsList.length; i++)
                           ChoiceChip(
                             label: Text(
-                              'Плата ${i + 1}: ${(_blankBoardsList[i] as Map<String, dynamic>)['board_name'] ?? 'Позиция ${i + 1}'}',
+                              'Плата ${i + 1}: ${(_blankBoardsList[i] as Map)['board_name'] ?? 'Позиция ${i + 1}'}',
                               style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.w600),
                             ),
                             selected: _selectedBoardIdx == i,
@@ -2345,7 +2351,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                 _syncCurrentFormBackToBoardList();
                                 _selectedBoardIdx = i;
                                 _applyBoardFromBlank(
-                                  _blankBoardsList[i] as Map<String, dynamic>,
+                                  _blankBoardsList[i] as Map,
                                   _analysis?.projectTitle ?? '',
                                 );
                               });
@@ -2395,7 +2401,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     value: _orderType,
                                     items: const ['Новый', 'Повтор'],
                                     onChanged: (v) => setState(() {
-                                      _orderType = v!;
+                                      _orderType = v.toString();
                                       _recalculateTariffFromSpecs();
                                     }),
                                   ),
@@ -2407,7 +2413,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     value: _urgency,
                                     items: const ['Серийный', 'Экспресс', 'СуперЭкспресс'],
                                     onChanged: (v) => setState(() {
-                                      _urgency = v!;
+                                      _urgency = v.toString();
                                       _recalculateTariffFromSpecs();
                                     }),
                                   ),
@@ -2494,7 +2500,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     value: '$_layersCount',
                                     items: const ['1', '2', '4', '6', '8', '10', '12', '16'],
                                     onChanged: (v) => setState(() {
-                                      _layersCount = int.parse(v!);
+                                      _layersCount = int.parse(v.toString());
                                       _recalculateTariffFromSpecs();
                                     }),
                                   ),
@@ -2506,13 +2512,13 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     value: _material,
                                     items: const ['FR4', 'FR4 Tg170', 'Алюминий', 'Rogers'],
                                     onChanged: (v) => setState(() {
-                                      _material = v!;
+                                      _material = v.toString();
                                       _recalculateTariffFromSpecs();
                                     }),
                                   ),
                                 ),
                                 const SizedBox(width: 10),
-                                Expanded(child: _dropdownField(label: 'Толщина, мм', value: _thickness, items: const ['0.5', '0.8', '1.0', '1.5', '1.6', '2.0', '2.5', '3.0'], onChanged: (v) => setState(() => _thickness = v!))),
+                                Expanded(child: _dropdownField(label: 'Толщина, мм', value: _thickness, items: const ['0.5', '0.8', '1.0', '1.5', '1.6', '2.0', '2.5', '3.0'], onChanged: (v) => setState(() => _thickness = v.toString()))),
                                 const SizedBox(width: 10),
                                 Expanded(
                                   child: _dropdownField(
@@ -2520,7 +2526,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     value: _foil,
                                     items: const ['12', '18', '35', '50', '70', '105'],
                                     onChanged: (v) => setState(() {
-                                      _foil = v!;
+                                      _foil = v.toString();
                                       _recalculateTariffFromSpecs();
                                     }),
                                   ),
@@ -2536,7 +2542,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     value: _maskSide,
                                     items: const ['С двух сторон', 'С одной стороны', 'Без маски'],
                                     onChanged: (v) => setState(() {
-                                      _maskSide = v!;
+                                      _maskSide = v.toString();
                                       _recalculateTariffFromSpecs();
                                     }),
                                   ),
@@ -2548,7 +2554,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     value: _maskColor,
                                     items: const ['Зеленая', 'Синяя', 'Черная', 'Белая', 'Красная'],
                                     onChanged: (v) => setState(() {
-                                      _maskColor = v!;
+                                      _maskColor = v.toString();
                                       _recalculateTariffFromSpecs();
                                     }),
                                   ),
@@ -2560,7 +2566,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     value: _finish,
                                     items: const ['HAL (ПОС-63)', 'Иммерсионное золото', 'Иммерсионное олово', 'Без покрытия'],
                                     onChanged: (v) => setState(() {
-                                      _finish = v!;
+                                      _finish = v.toString();
                                       _recalculateTariffFromSpecs();
                                     }),
                                   ),
@@ -2570,11 +2576,11 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                             const SizedBox(height: 12),
                             Row(
                               children: [
-                                Expanded(child: _dropdownField(label: 'Маркировка', value: _silkSide, items: const ['С двух сторон', 'С одной стороны', 'Без маркировки'], onChanged: (v) => setState(() => _silkSide = v!))),
+                                Expanded(child: _dropdownField(label: 'Маркировка', value: _silkSide, items: const ['С двух сторон', 'С одной стороны', 'Без маркировки'], onChanged: (v) => setState(() => _silkSide = v.toString()))),
                                 const SizedBox(width: 10),
-                                Expanded(child: _dropdownField(label: 'Цвет марк.', value: _silkColor, items: const ['Белая', 'Черная'], onChanged: (v) => setState(() => _silkColor = v!))),
+                                Expanded(child: _dropdownField(label: 'Цвет марк.', value: _silkColor, items: const ['Белая', 'Черная'], onChanged: (v) => setState(() => _silkColor = v.toString()))),
                                 const SizedBox(width: 10),
-                                Expanded(child: _dropdownField(label: 'Контур', value: _contour, items: const ['фрезеровка', 'скрайбирование', 'фрезеровка + скрайб'], onChanged: (v) => setState(() => _contour = v!))),
+                                Expanded(child: _dropdownField(label: 'Контур', value: _contour, items: const ['фрезеровка', 'скрайбирование', 'фрезеровка + скрайб'], onChanged: (v) => setState(() => _contour = v.toString()))),
                               ],
                             ),
                             const SizedBox(height: 12),
@@ -2734,7 +2740,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     ),
                                     child: const Text('В архиве бинарный .BRD без контура — укажите X и Y вручную.', style: TextStyle(fontSize: 12)),
                                   ),
-                                ...dfmChecks.map((chk) {
+                                ...dfmChecks.map((rawChk) {
+                                  final chk = rawChk as DfmCheckItem;
                                   final col = chk.level == 'error'
                                       ? Colors.redAccent
                                       : (chk.level == 'warn' ? Colors.amberAccent : const Color(0xFF10B981));
@@ -2787,39 +2794,42 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     ],
                                   ),
                                   const SizedBox(height: 10),
-                                  ..._analysis!.layers.map((l) => InkWell(
-                                        borderRadius: BorderRadius.circular(8),
-                                        onTap: () => _openExtractedFile(l.extractedPath, l.fileName),
-                                        child: Container(
-                                          margin: const EdgeInsets.symmetric(vertical: 2),
-                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
-                                          decoration: BoxDecoration(
-                                            color: l.isImportantDoc ? accent.withOpacity(0.08) : Colors.transparent,
-                                            borderRadius: BorderRadius.circular(8),
-                                          ),
-                                          child: Row(
-                                            children: [
-                                              Icon(
-                                                l.isImportantDoc ? Icons.open_in_new_rounded : Icons.insert_drive_file_outlined,
-                                                size: 15,
-                                                color: l.isImportantDoc ? const Color(0xFF38BDF8) : accent,
-                                              ),
-                                              const SizedBox(width: 6),
-                                              Expanded(
-                                                child: Text(
-                                                  l.fileName,
-                                                  style: TextStyle(
-                                                    fontSize: 12,
-                                                    fontWeight: FontWeight.w600,
-                                                    color: l.isImportantDoc ? const Color(0xFF38BDF8) : null,
-                                                  ),
+                                  ..._analysis!.layers.map((rawL) {
+                                    final l = rawL as GerberLayerInfo;
+                                    return InkWell(
+                                      borderRadius: BorderRadius.circular(8),
+                                      onTap: () => _openExtractedFile(l.extractedPath, l.fileName),
+                                      child: Container(
+                                        margin: const EdgeInsets.symmetric(vertical: 2),
+                                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
+                                        decoration: BoxDecoration(
+                                          color: l.isImportantDoc ? accent.withOpacity(0.08) : Colors.transparent,
+                                          borderRadius: BorderRadius.circular(8),
+                                        ),
+                                        child: Row(
+                                          children: [
+                                            Icon(
+                                              l.isImportantDoc ? Icons.open_in_new_rounded : Icons.insert_drive_file_outlined,
+                                              size: 15,
+                                              color: l.isImportantDoc ? const Color(0xFF38BDF8) : accent,
+                                            ),
+                                            const SizedBox(width: 6),
+                                            Expanded(
+                                              child: Text(
+                                                l.fileName,
+                                                style: TextStyle(
+                                                  fontSize: 12,
+                                                  fontWeight: FontWeight.w600,
+                                                  color: l.isImportantDoc ? const Color(0xFF38BDF8) : null,
                                                 ),
                                               ),
-                                              Text(l.role, style: TextStyle(fontSize: 11, color: _subtleText)),
-                                            ],
-                                          ),
+                                            ),
+                                            Text(l.role, style: TextStyle(fontSize: 11, color: _subtleText)),
+                                          ],
                                         ),
-                                      )),
+                                      ),
+                                    );
+                                  }),
                                   if (_analysis!.drillToolsBreakdown.isNotEmpty) ...[
                                     const Divider(height: 18),
                                     const Text('Инструменты сверловки (.DRL):', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold)),
@@ -2827,7 +2837,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     Wrap(
                                       spacing: 6,
                                       runSpacing: 6,
-                                      children: (_analysis!.drillToolsBreakdown.entries.toList()..sort((a, b) => a.key.compareTo(b.key)))
+                                      children: (_analysis!.drillToolsBreakdown.entries.toList()..sort((a, b) => (a.key as double).compareTo(b.key as double)))
                                           .map((e) => Chip(
                                                 visualDensity: VisualDensity.compact,
                                                 label: Text('Ø ${e.key} мм — ${e.value} шт.', style: const TextStyle(fontSize: 11)),
