@@ -89,6 +89,7 @@ class GerberAnalysisResult {
   final bool hasTopSilk;
   final bool hasBottomSilk;
   final bool hasBinaryBrdOnly;
+  final bool hasNestedArchive;
   final double? widthMm;
   final double? heightMm;
   final double? minTrackMm;
@@ -107,6 +108,7 @@ class GerberAnalysisResult {
     required this.hasTopSilk,
     required this.hasBottomSilk,
     required this.hasBinaryBrdOnly,
+    required this.hasNestedArchive,
     this.widthMm,
     this.heightMm,
     this.minTrackMm,
@@ -157,6 +159,12 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   // Поля прайс-калькулятора
   final TextEditingController _basePriceDm2Controller = TextEditingController(text: '528.0');
   final TextEditingController _setupFeeController = TextEditingController(text: '2400.0');
+  bool _manualPriceOverride = false;
+
+  // Состояние парсинга цены напрямую с сайта pselectro.ru
+  bool _isFetchingWebPrice = false;
+  String? _webPriceResult;
+  String? _webPriceDetails;
 
   String _orderType = 'Новый';
   int _layersCount = 2;
@@ -186,31 +194,304 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     );
   }
 
+  void _recalculateTariffFromSpecs({bool force = false}) {
+    if (_manualPriceOverride && !force) return;
+
+    double dm2Rate;
+    double setupFee;
+    switch (_layersCount) {
+      case 1:
+        dm2Rate = 380.0;
+        setupFee = 1800.0;
+        break;
+      case 2:
+        dm2Rate = 528.0;
+        setupFee = 2400.0;
+        break;
+      case 4:
+        dm2Rate = 1150.0;
+        setupFee = 5500.0;
+        break;
+      case 6:
+        dm2Rate = 1750.0;
+        setupFee = 8500.0;
+        break;
+      case 8:
+        dm2Rate = 2400.0;
+        setupFee = 12000.0;
+        break;
+      default:
+        dm2Rate = 3200.0 + (_layersCount - 10) * 350.0;
+        setupFee = 16000.0;
+        break;
+    }
+
+    if (_material == 'Алюминий') dm2Rate *= 1.35;
+    if (_material == 'Rogers') dm2Rate *= 2.80;
+
+    final foilInt = int.tryParse(_foil) ?? 18;
+    if (foilInt >= 70) {
+      dm2Rate *= 1.30;
+    } else if (foilInt >= 35) {
+      dm2Rate *= 1.12;
+    }
+
+    if (_finish == 'Иммерсионное золото') {
+      dm2Rate *= 1.35;
+    } else if (_finish == 'Иммерсионное олово') {
+      dm2Rate *= 1.15;
+    }
+
+    if (_maskColor != 'Зеленая' && _maskSide != 'Без маски') {
+      dm2Rate *= 1.08;
+    }
+
+    if (_orderType == 'Повтор') {
+      setupFee = 0.0;
+    }
+
+    _basePriceDm2Controller.text = dm2Rate.toStringAsFixed(1);
+    _setupFeeController.text = setupFee.toStringAsFixed(1);
+  }
+
+  void _resetAllFieldsToDefault({bool showToast = true}) {
+    _analysis = null;
+    _manualPriceOverride = false;
+    _webPriceResult = null;
+    _webPriceDetails = null;
+    _customerController.clear();
+    _orderNameController.clear();
+    _widthController.text = '0.0';
+    _heightController.text = '0.0';
+    _qtyController.text = '10';
+    _minTrackController.text = '0.15';
+    _minHoleController.text = '0.30';
+    _notesController.clear();
+    _orderType = 'Новый';
+    _layersCount = 2;
+    _material = 'FR4';
+    _thickness = '1.5';
+    _foil = '18';
+    _maskSide = 'С двух сторон';
+    _maskColor = 'Зеленая';
+    _silkSide = 'С двух сторон';
+    _silkColor = 'Белая';
+    _finish = 'HAL';
+    _contour = 'фрезеровка';
+    _electroTest = true;
+    _recalculateTariffFromSpecs(force: true);
+
+    if (showToast) {
+      _showSnack('Проект очищен. Готово к загрузке нового архива!');
+    }
+  }
+
   void _clearCurrentProject() {
     setState(() {
-      _analysis = null;
-      _customerController.clear();
-      _orderNameController.clear();
-      _widthController.text = '0.0';
-      _heightController.text = '0.0';
-      _qtyController.text = '10';
-      _minTrackController.text = '0.15';
-      _minHoleController.text = '0.30';
-      _notesController.clear();
-      _orderType = 'Новый';
-      _layersCount = 2;
-      _material = 'FR4';
-      _thickness = '1.5';
-      _foil = '18';
-      _maskSide = 'С двух сторон';
-      _maskColor = 'Зеленая';
-      _silkSide = 'С двух сторон';
-      _silkColor = 'Белая';
-      _finish = 'HAL';
-      _contour = 'фрезеровка';
-      _electroTest = true;
+      _resetAllFieldsToDefault(showToast: true);
     });
-    _showSnack('Проект очищен. Готово к загрузке нового архива!');
+  }
+
+  Future<void> _fetchPriceFromWebsite() async {
+    final w = double.tryParse(_widthController.text.replaceAll(',', '.')) ?? 0;
+    final h = double.tryParse(_heightController.text.replaceAll(',', '.')) ?? 0;
+    final qty = int.tryParse(_qtyController.text.trim()) ?? 10;
+
+    if (w <= 0 || h <= 0) {
+      _showSnack('Сначала укажите длину X и ширину Y платы (больше 0)!');
+      return;
+    }
+
+    if (!Platform.isWindows) {
+      _showSnack('Автозапрос с сайта через Playwright работает на Windows.');
+      return;
+    }
+
+    setState(() {
+      _isFetchingWebPrice = true;
+      _webPriceResult = null;
+      _webPriceDetails = 'Подключение к pselectro.ru/calculate-cost/...';
+    });
+
+    try {
+      final tempDir = await getTemporaryDirectory();
+      final scriptFile = File('${tempDir.path}\\pselectro_calc_bot.py');
+      final resultFile = File('${tempDir.path}\\pselectro_calc_result.json');
+      if (resultFile.existsSync()) resultFile.deleteSync();
+
+      final pyScript = '''
+# -*- coding: utf-8 -*-
+import json
+import re
+import sys
+from playwright.sync_api import sync_playwright
+
+WIDTH = "${w.toStringAsFixed(1)}"
+HEIGHT = "${h.toStringAsFixed(1)}"
+QTY = "$qty"
+LAYERS = "$_layersCount"
+THICKNESS = "$_thickness"
+FOIL = "$_foil"
+MASK_SIDE = "$_maskSide"
+MASK_COLOR = "$_maskColor"
+SILK_SIDE = "$_silkSide"
+FINISH = "$_finish"
+ORDER_TYPE = "$_orderType"
+OUT_JSON = r"${resultFile.path}"
+
+def try_fill_by_label_or_placeholder(page, keywords, value):
+    inputs = page.locator("input[type='text'], input[type='number'], input:not([type])")
+    count = inputs.count()
+    for i in range(count):
+        inp = inputs.nth(i)
+        if not inp.is_visible():
+            continue
+        attrs = " ".join([
+            inp.get_attribute("name") or "",
+            inp.get_attribute("id") or "",
+            inp.get_attribute("placeholder") or "",
+            inp.get_attribute("aria-label") or "",
+        ]).lower()
+        # Проверяем также текст родительского блока
+        parent_text = ""
+        try:
+            parent_text = inp.locator("xpath=..").inner_text().lower()
+        except Exception:
+            pass
+        combined = attrs + " " + parent_text
+        if any(k in combined for k in keywords):
+            try:
+                inp.fill("")
+                inp.fill(str(value))
+                inp.dispatch_event("change")
+                inp.dispatch_event("blur")
+                return True
+            except Exception:
+                pass
+    return False
+
+def try_click_option(page, text_variants):
+    for txt in text_variants:
+        loc = page.locator(f"label:has-text('{txt}'), button:has-text('{txt}'), option:has-text('{txt}'), span:has-text('{txt}')")
+        if loc.count() > 0:
+            for i in range(loc.count()):
+                el = loc.nth(i)
+                if el.is_visible():
+                    try:
+                        el.click(timeout=1500)
+                        return True
+                    except Exception:
+                        pass
+    return False
+
+def main():
+    res = {"ok": False, "price": "", "raw": "", "error": ""}
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=False)
+            context = browser.new_context(viewport={"width": 1366, "height": 900})
+            page = context.new_page()
+            page.goto("https://pselectro.ru/calculate-cost/", timeout=60000, wait_until="domcontentloaded")
+            page.wait_for_timeout(2500)
+
+            # Закрываем возможные баннеры cookies
+            try_click_option(page, ["Принять", "Согласен", "Хорошо"])
+
+            # Заполняем количество слоев
+            if LAYERS == "1":
+                try_click_option(page, ["1 слой", "Односторонняя", "1"])
+            elif LAYERS == "2":
+                try_click_option(page, ["2 слоя", "Двухсторонняя", "2"])
+            else:
+                try_click_option(page, [f"{LAYERS} сло", f"{LAYERS}"])
+
+            # Заполняем габариты X, Y и тираж
+            try_fill_by_label_or_placeholder(page, ["длина", "width", "размер x", "x,"], WIDTH)
+            try_fill_by_label_or_placeholder(page, ["ширина", "height", "размер y", "y,"], HEIGHT)
+            try_fill_by_label_or_placeholder(page, ["количество", "тираж", "qty", "count", "шт"], QTY)
+
+            # Выбор маски, покрытия и повтора
+            if ORDER_TYPE == "Повтор":
+                try_click_option(page, ["Повтор", "Повторный"])
+            if MASK_SIDE == "Без маски":
+                try_click_option(page, ["Без маски"])
+            if "золото" in FINISH.lower():
+                try_click_option(page, ["Иммерсионное золото", "ENIG"])
+            elif "олово" in FINISH.lower():
+                try_click_option(page, ["Иммерсионное олово"])
+
+            page.wait_for_timeout(1200)
+
+            # Нажимаем кнопку расчёта, если она есть
+            try_click_option(page, ["Рассчитать", "Посчитать", "Расчет стоимости"])
+            page.wait_for_timeout(3000)
+
+            body_text = page.locator("body").inner_text()
+            # Ищем итоговую сумму в рублях на странице
+            matches = re.findall(r"(?:итого|стоимость|сумма|всего)[^\\d]{0,35}([\\d\\s]+[.,]?\\d*)\\s*(?:руб|₽)", body_text, flags=re.IGNORECASE)
+            if not matches:
+                matches = re.findall(r"([\\d\\s]{2,12}[.,]\\d{2})\\s*(?:руб|₽)", body_text, flags=re.IGNORECASE)
+
+            if matches:
+                cleaned_prices = [m.strip() for m in matches if any(ch.isdigit() for ch in m)]
+                res["ok"] = True
+                res["price"] = cleaned_prices[-1] + " руб."
+                res["raw"] = "Найдено на странице: " + ", ".join(cleaned_prices[:3])
+            else:
+                res["ok"] = False
+                res["error"] = "Не удалось автоматически считать цифру итога со страницы (проверьте открытое окно браузера)."
+
+            page.wait_for_timeout(2000)
+            browser.close()
+    except Exception as e:
+        res["error"] = str(e)
+
+    with open(OUT_JSON, "w", encoding="utf-8") as f:
+        json.dump(res, f, ensure_ascii=False)
+
+if __name__ == "__main__":
+    main()
+''';
+
+      await scriptFile.writeAsString(pyScript, encoding: utf8);
+
+      final procResult = await Process.run(
+        'python',
+        [scriptFile.path],
+        runInShell: true,
+      );
+
+      if (resultFile.existsSync()) {
+        final jsonStr = await resultFile.readAsString(encoding: utf8);
+        final data = jsonDecode(jsonStr) as Map<String, dynamic>;
+        if (data['ok'] == true && (data['price']?.toString().isNotEmpty ?? false)) {
+          setState(() {
+            _webPriceResult = data['price'].toString();
+            _webPriceDetails = data['raw']?.toString() ?? 'Актуальный расчёт с pselectro.ru';
+          });
+          _showSnack('Цена с сайта получена: $_webPriceResult');
+        } else {
+          final err = data['error']?.toString() ?? 'Не удалось получить цену';
+          setState(() => _webPriceDetails = 'Ошибка: $err');
+          _showSnack(err);
+        }
+      } else {
+        final stderrText = procResult.stderr.toString().trim();
+        setState(() {
+          _webPriceDetails = stderrText.isNotEmpty
+              ? 'Python ошибка: $stderrText'
+              : 'Скрипт завершился без файла результата (проверьте установку playwright).';
+        });
+        _showSnack('Не удалось запустить Playwright (см. статус под кнопкой)');
+      }
+    } catch (e) {
+      setState(() => _webPriceDetails = 'Ошибка запуска: $e');
+      _showSnack('Ошибка: $e');
+    } finally {
+      if (mounted) {
+        setState(() => _isFetchingWebPrice = false);
+      }
+    }
   }
 
   Future<void> _pickAndAnalyzeZip() async {
@@ -236,9 +517,12 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       bool hasBottomSilk = false;
       bool hasBinaryBrd = false;
       bool hasTextContour = false;
+      bool hasNestedArchive = false;
 
       double? detectedWidth;
       double? detectedHeight;
+      double? fallbackCopperWidth;
+      double? fallbackCopperHeight;
       double? minTrackMm;
       double? minDrillMm;
       int totalHoles = 0;
@@ -252,31 +536,71 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         final upper = rawName.toUpperCase();
         String role = 'Прочий файл проекта';
 
-        if (upper.endsWith('.TOP') || upper.endsWith('.GTL') || upper.contains('F_CU') || upper.contains('TOP_COPPER')) {
+        if (upper.endsWith('.RAR') || upper.endsWith('.ZIP') || upper.endsWith('.7Z')) {
+          role = 'Вложенный архив (требует распаковки)';
+          hasNestedArchive = true;
+        } else if (upper.endsWith('.TOP') ||
+            upper.endsWith('.GTL') ||
+            upper.endsWith('.CMP') ||
+            upper.contains('F_CU') ||
+            upper.contains('TOP_COPPER') ||
+            upper.contains('_TOP.')) {
           role = 'Верхний слой меди (TOP)';
           copperLayers++;
-        } else if (upper.endsWith('.BOT') || upper.endsWith('.GBL') || upper.contains('B_CU') || upper.contains('BOT_COPPER')) {
+        } else if (upper.endsWith('.BOT') ||
+            upper.endsWith('.GBL') ||
+            upper.endsWith('.SOL') ||
+            upper.contains('B_CU') ||
+            upper.contains('BOT_COPPER') ||
+            upper.contains('_BOT.')) {
           role = 'Нижний слой меди (BOT)';
           copperLayers++;
-        } else if (RegExp(r'\.(G[1-9]|IN[1-9]|L[2-9])$').hasMatch(upper)) {
+        } else if (RegExp(r'\.(G[1-9]|IN[1-9]|L[2-9]|GP[1-9])$').hasMatch(upper)) {
           role = 'Внутренний слой меди';
           copperLayers++;
-        } else if (upper.endsWith('.TMS') || upper.endsWith('.GTS') || upper.contains('F_MASK')) {
+        } else if (upper.endsWith('.TMS') ||
+            upper.endsWith('.GTS') ||
+            upper.endsWith('.STC') ||
+            upper.contains('F_MASK') ||
+            upper.contains('TOPMASK')) {
           role = 'Верхняя паяльная маска';
           hasTopMask = true;
-        } else if (upper.endsWith('.BMS') || upper.endsWith('.GBS') || upper.contains('B_MASK')) {
+        } else if (upper.endsWith('.BMS') ||
+            upper.endsWith('.GBS') ||
+            upper.endsWith('.STS') ||
+            upper.contains('B_MASK') ||
+            upper.contains('BOTMASK')) {
           role = 'Нижняя паяльная маска';
           hasBottomMask = true;
-        } else if (upper.endsWith('.GTO') || upper.endsWith('.TSK') || upper.contains('F_SILK')) {
+        } else if (upper.endsWith('.GTO') ||
+            upper.endsWith('.TSK') ||
+            upper.endsWith('.PLC') ||
+            upper.contains('F_SILK') ||
+            upper.contains('TOPSILK')) {
           role = 'Верхняя маркировка (шелкография)';
           hasTopSilk = true;
-        } else if (upper.endsWith('.GBO') || upper.endsWith('.BSK') || upper.contains('B_SILK')) {
+        } else if (upper.endsWith('.GBO') ||
+            upper.endsWith('.BSK') ||
+            upper.endsWith('.PLS') ||
+            upper.contains('B_SILK') ||
+            upper.contains('BOTSILK')) {
           role = 'Нижняя маркировка (шелкография)';
           hasBottomSilk = true;
-        } else if (upper.endsWith('.GKO') || upper.endsWith('.GM1') || upper.contains('EDGE') || upper.contains('OUTLINE') || upper.contains('BOARD')) {
+        } else if (upper.endsWith('.GKO') ||
+            upper.endsWith('.GM1') ||
+            upper.endsWith('.GM2') ||
+            upper.endsWith('.GBR') ||
+            upper.contains('EDGE') ||
+            upper.contains('OUTLINE') ||
+            upper.contains('BOARD') ||
+            upper.contains('KONTUR')) {
           role = 'Контур платы / фрезеровка';
           hasTextContour = true;
-        } else if (upper.endsWith('.DRL') || upper.endsWith('.TXT') || upper.endsWith('.EXC') || upper.contains('DRILL')) {
+        } else if (upper.endsWith('.DRL') ||
+            upper.endsWith('.TXT') ||
+            upper.endsWith('.EXC') ||
+            upper.endsWith('.TAP') ||
+            upper.contains('DRILL')) {
           role = 'Сверловка (Excellon)';
         } else if (upper.endsWith('.BRD')) {
           role = 'Файл платы P-CAD / CAD (.BRD)';
@@ -288,7 +612,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         final contentBytes = file.content as List<int>;
         final isLikelyBinary = contentBytes.take(200).where((b) => b == 0).length > 5;
 
-        if (!isLikelyBinary) {
+        if (!isLikelyBinary && !hasNestedArchive) {
           final textContent = utf8.decode(contentBytes, allowMalformed: true);
           if (role.contains('Сверловка')) {
             final drillStats = _parseExcellonDrill(textContent);
@@ -297,18 +621,26 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
               drillBreakdown[entry.key] = (drillBreakdown[entry.key] ?? 0) + entry.value;
               if (minDrillMm == null || entry.key < minDrillMm) minDrillMm = entry.key;
             }
-          } else if (role.contains('меди') || role.contains('Контур')) {
+          } else if (role.contains('меди') || role.contains('Контур') || upper.endsWith('.GBR') || upper.endsWith('.PHO')) {
             final gerberStats = _parseGerberGeometry(textContent);
             if (gerberStats.minTrackMm != null && (minTrackMm == null || gerberStats.minTrackMm! < minTrackMm)) {
               minTrackMm = gerberStats.minTrackMm;
             }
-            if (gerberStats.widthMm != null && gerberStats.heightMm != null && (role.contains('Контур') || detectedWidth == null)) {
-              detectedWidth = gerberStats.widthMm;
-              detectedHeight = gerberStats.heightMm;
+            if (gerberStats.widthMm != null && gerberStats.heightMm != null) {
+              if (role.contains('Контур')) {
+                detectedWidth = gerberStats.widthMm;
+                detectedHeight = gerberStats.heightMm;
+              } else if (fallbackCopperWidth == null) {
+                fallbackCopperWidth = gerberStats.widthMm;
+                fallbackCopperHeight = gerberStats.heightMm;
+              }
             }
           }
         }
       }
+
+      detectedWidth ??= fallbackCopperWidth;
+      detectedHeight ??= fallbackCopperHeight;
 
       final finalLayersCount = copperLayers > 0 ? copperLayers : 2;
       final projectTitle = archiveName.replaceAll(RegExp(r'\.zip$', caseSensitive: false), '');
@@ -324,6 +656,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         hasTopSilk: hasTopSilk,
         hasBottomSilk: hasBottomSilk,
         hasBinaryBrdOnly: hasBinaryBrd && !hasTextContour && detectedWidth == null,
+        hasNestedArchive: hasNestedArchive,
         widthMm: detectedWidth,
         heightMm: detectedHeight,
         minTrackMm: minTrackMm,
@@ -333,34 +666,41 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       );
 
       setState(() {
+        _resetAllFieldsToDefault(showToast: false);
+
         _analysis = resultObj;
         _orderNameController.text = projectTitle;
         _layersCount = finalLayersCount;
-        
-        if (detectedWidth != null) {
+
+        if (detectedWidth != null && detectedHeight != null) {
           _widthController.text = detectedWidth.toStringAsFixed(1);
-        } else {
-          _widthController.text = '0.0';
-        }
-
-        if (detectedHeight != null) {
           _heightController.text = detectedHeight.toStringAsFixed(1);
-        } else {
-          _heightController.text = '0.0';
         }
 
-        if (minTrackMm != null) _minTrackController.text = minTrackMm.toStringAsFixed(3);
-        if (minDrillMm != null) _minHoleController.text = minDrillMm.toStringAsFixed(2);
-        
+        if (minTrackMm != null) {
+          _minTrackController.text = minTrackMm.toStringAsFixed(3);
+        }
+        if (minDrillMm != null) {
+          _minHoleController.text = minDrillMm.toStringAsFixed(2);
+        }
+
         _maskSide = (hasTopMask && hasBottomMask)
             ? 'С двух сторон'
             : ((hasTopMask || hasBottomMask) ? 'С одной стороны' : 'Без маски');
         _silkSide = (hasTopSilk && hasBottomSilk)
             ? 'С двух сторон'
             : ((hasTopSilk || hasBottomSilk) ? 'С одной стороны' : 'Без маркировки');
+
+        _recalculateTariffFromSpecs(force: true);
       });
 
-      _showSnack('Проект $archiveName проанализирован!');
+      if (hasNestedArchive) {
+        _showSnack('Внутри архива найден .RAR/.ZIP! Распакуйте его или введите габариты X/Y вручную.');
+      } else if (detectedWidth == null) {
+        _showSnack('Архив загружен, но контур не распознан — введите X и Y вручную для расчёта цены.');
+      } else {
+        _showSnack('Проект $archiveName проанализирован!');
+      }
     } catch (e) {
       _showSnack('Ошибка чтения архива: $e');
     }
@@ -380,7 +720,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       if (line.contains('INCH')) isMetric = false;
       if (line.contains('METRIC')) isMetric = true;
 
-      final defMatch = RegExp(r'^(T\d+)C([\d.]+)').firstMatch(line);
+      final defMatch = RegExp(r'^(T\d+).*?C([\d.]+)').firstMatch(line);
       if (defMatch != null) {
         final tCode = defMatch.group(1)!;
         double d = double.tryParse(defMatch.group(2)!) ?? 0;
@@ -427,8 +767,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         }
       }
 
-      final coordMatch = RegExp(r'X(-?\d+)Y(-?\d+)D0[12]').firstMatch(line);
-      if (coordMatch != null) {
+      final coordMatch = RegExp(r'X(-?\d+)Y(-?\d+)').firstMatch(line);
+      if (coordMatch != null && (line.contains('D01') || line.contains('D02') || line.contains('D1*') || line.contains('D2*'))) {
         final rawX = double.tryParse(coordMatch.group(1)!);
         final rawY = double.tryParse(coordMatch.group(2)!);
         if (rawX != null && rawY != null) {
@@ -488,6 +828,12 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         title: 'Габариты платы в норме (${w.toStringAsFixed(1)}×${h.toStringAsFixed(1)} мм)',
         detail: 'Укладываются в стандартное рабочее поле (до 450×350 мм).',
         level: 'ok',
+      ));
+    } else {
+      checks.add(DfmCheckItem(
+        title: 'Не заданы габариты платы (X × Y = 0)',
+        detail: 'Укажите длину X и ширину Y в мм слева для расчёта площади и цены.',
+        level: 'warn',
       ));
     }
 
@@ -607,10 +953,13 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     sb.writeln('Тип заказа:        $_orderType');
     sb.writeln('Тираж:             $qty шт. (площадь 1 шт: ${singleDm2.toStringAsFixed(3)} дм², партия: ${totalDm2.toStringAsFixed(2)} дм²)');
     sb.writeln('--------------------------------------------------------------------');
-    sb.writeln('РАСЧЕТ СТОИМОСТИ (ПРЕДВАРИТЕЛЬНЫЙ):');
-    sb.writeln('• Сумма без НДС:   ${pureSum.toStringAsFixed(2)} руб.');
-    sb.writeln('• НДС (22%):       ${vatSum.toStringAsFixed(2)} руб.');
-    sb.writeln('• ИТОГО с НДС:     ${totalSumWithVat.toStringAsFixed(2)} руб.');
+    sb.writeln('РАСЧЕТ СТОИМОСТИ:');
+    if (_webPriceResult != null) {
+      sb.writeln('• Расчет с сайта pselectro.ru: $_webPriceResult');
+    }
+    sb.writeln('• Локально без НДС: ${pureSum.toStringAsFixed(2)} руб.');
+    sb.writeln('• НДС (22%):        ${vatSum.toStringAsFixed(2)} руб.');
+    sb.writeln('• ИТОГО с НДС:      ${totalSumWithVat.toStringAsFixed(2)} руб.');
     sb.writeln('--------------------------------------------------------------------');
     sb.writeln('СПЕЦИФИКАЦИЯ ДЛЯ 1С / КП:');
     sb.writeln(_buildSpecificationLine());
@@ -661,12 +1010,16 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   void _copyClientEmailTemplate(double totalWithVat, double totalDm2) {
     final title = _orderNameController.text.trim().isEmpty ? 'платы' : _orderNameController.text.trim();
     final qty = _qtyController.text.trim();
+    final priceLine = _webPriceResult != null
+        ? '• Стоимость партии по калькулятору сайта: $_webPriceResult'
+        : '• Предварительная стоимость партии с учетом НДС 22%: ${totalWithVat.toStringAsFixed(2)} руб.';
+
     final text = '''Здравствуйте!
 Благодарим за обращение на завод «ЭЛЕКТРОконнект».
 
 По результатам проверки производственных файлов проекта «$title» ($qty шт., общая площадь партии: ${totalDm2.toStringAsFixed(2)} дм²):
 • Габариты и класс точности соответствуют стандартам технологического регламента.
-• Предварительная стоимость партии с учетом НДС 22%: ${totalWithVat.toStringAsFixed(2)} руб.
+$priceLine
 
 Ждем ваше подтверждение запуска в производство!
 
@@ -691,11 +1044,14 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     required String label,
     IconData? icon,
     TextInputType keyboardType = TextInputType.text,
+    bool isPriceField = false,
   }) {
     return TextField(
       controller: controller,
       keyboardType: keyboardType,
-      onChanged: (_) => setState(() {}),
+      onChanged: (_) => setState(() {
+        if (isPriceField) _manualPriceOverride = true;
+      }),
       style: const TextStyle(fontSize: 14),
       decoration: InputDecoration(
         labelText: label,
@@ -740,12 +1096,13 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     final w = double.tryParse(_widthController.text.replaceAll(',', '.')) ?? 0;
     final h = double.tryParse(_heightController.text.replaceAll(',', '.')) ?? 0;
     final qty = int.tryParse(_qtyController.text.trim()) ?? 10;
-    final singleAreaDm2 = (w > 0 && h > 0) ? (w * h) / 10000.0 : null;
-    final totalAreaDm2 = singleAreaDm2 != null ? singleAreaDm2 * math.max(qty, 1) : 0.0;
+    final hasValidDimensions = w > 0 && h > 0;
+    final singleAreaDm2 = hasValidDimensions ? (w * h) / 10000.0 : 0.0;
+    final totalAreaDm2 = singleAreaDm2 * math.max(qty, 1);
 
     final baseP = double.tryParse(_basePriceDm2Controller.text.replaceAll(',', '.')) ?? 528.0;
     final setupP = double.tryParse(_setupFeeController.text.replaceAll(',', '.')) ?? 2400.0;
-    final pureSum = (totalAreaDm2 * baseP) + setupP;
+    final pureSum = hasValidDimensions ? ((totalAreaDm2 * baseP) + setupP) : 0.0;
     final vatSum = pureSum * 0.22;
     final totalSumWithVat = pureSum + vatSum;
 
@@ -771,7 +1128,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text('ЭЛЕКТРОконнект — CAM & DFM Контроль (Кувезенков А.А.)', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-                Text('Анализ Gerber • Проверка норм завода • Расчет цены и ТЗ', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                Text('Анализ Gerber • Проверка норм завода • Расчет цены с сайта и ТЗ', style: TextStyle(fontSize: 11, color: Colors.grey)),
               ],
             ),
           ],
@@ -865,7 +1222,17 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                             const SizedBox(height: 12),
                             Row(
                               children: [
-                                Expanded(child: _dropdownField(label: 'Тип заказа', value: _orderType, items: const ['Новый', 'Повтор'], onChanged: (v) => setState(() => _orderType = v!))),
+                                Expanded(
+                                  child: _dropdownField(
+                                    label: 'Тип заказа',
+                                    value: _orderType,
+                                    items: const ['Новый', 'Повтор'],
+                                    onChanged: (v) => setState(() {
+                                      _orderType = v!;
+                                      _recalculateTariffFromSpecs();
+                                    }),
+                                  ),
+                                ),
                                 const SizedBox(width: 10),
                                 Expanded(child: _inputField(controller: _widthController, label: 'Длина X, мм', keyboardType: TextInputType.number)),
                                 const SizedBox(width: 10),
@@ -877,62 +1244,148 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                             const SizedBox(height: 12),
                             Row(
                               children: [
-                                Expanded(child: _inputField(controller: _basePriceDm2Controller, label: 'Цена за 1 дм², руб.', keyboardType: TextInputType.number)),
+                                Expanded(child: _inputField(controller: _basePriceDm2Controller, label: 'Цена за 1 дм², руб.', keyboardType: TextInputType.number, isPriceField: true)),
                                 const SizedBox(width: 10),
-                                Expanded(child: _inputField(controller: _setupFeeController, label: 'Подготовка, руб.', keyboardType: TextInputType.number)),
+                                Expanded(child: _inputField(controller: _setupFeeController, label: 'Подготовка, руб.', keyboardType: TextInputType.number, isPriceField: true)),
                               ],
                             ),
-                            if (singleAreaDm2 != null) ...[
-                              const SizedBox(height: 10),
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xFF0284C7).withOpacity(0.12),
-                                  borderRadius: BorderRadius.circular(10),
-                                  border: Border.all(color: const Color(0xFF0284C7).withOpacity(0.35)),
-                                ),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Row(
-                                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                                      children: [
-                                        Text('Площадь 1 шт: ${singleAreaDm2.toStringAsFixed(3)} дм²', style: const TextStyle(fontSize: 12.5)),
-                                        Text('Партия: ${totalAreaDm2.toStringAsFixed(2)} дм²', style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold)),
-                                      ],
-                                    ),
+                            const SizedBox(height: 10),
+                            Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                              decoration: BoxDecoration(
+                                color: (hasValidDimensions ? const Color(0xFF0284C7) : Colors.amberAccent).withOpacity(0.12),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: (hasValidDimensions ? const Color(0xFF0284C7) : Colors.amberAccent).withOpacity(0.35)),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Text('Площадь 1 шт: ${singleAreaDm2.toStringAsFixed(3)} дм²', style: const TextStyle(fontSize: 12.5)),
+                                      Text('Партия: ${totalAreaDm2.toStringAsFixed(2)} дм²', style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold)),
+                                    ],
+                                  ),
+                                  const Divider(height: 12),
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Text(
+                                        hasValidDimensions ? 'Локальный расчёт с НДС (22%):' : 'Укажите длину X и ширину Y для расчёта цены:',
+                                        style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: _subtleText),
+                                      ),
+                                      Text(
+                                        hasValidDimensions ? '${totalSumWithVat.toStringAsFixed(2)} руб.' : '0.00 руб.',
+                                        style: TextStyle(
+                                          fontSize: 15,
+                                          fontWeight: FontWeight.bold,
+                                          color: hasValidDimensions ? const Color(0xFF0284C7) : Colors.amberAccent,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                  if (_webPriceResult != null || _webPriceDetails != null) ...[
                                     const Divider(height: 12),
                                     Row(
                                       mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                       children: [
-                                        Text('ИТОГО с НДС (22%):', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: _subtleText)),
-                                        Text('${totalSumWithVat.toStringAsFixed(2)} руб.', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF0284C7))),
+                                        const Text('Цена напрямую с сайта pselectro.ru:', style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF10B981))),
+                                        Text(
+                                          _webPriceResult ?? '...',
+                                          style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: Color(0xFF10B981)),
+                                        ),
                                       ],
                                     ),
+                                    if (_webPriceDetails != null)
+                                      Padding(
+                                        padding: const EdgeInsets.only(top: 3),
+                                        child: Text(_webPriceDetails!, style: TextStyle(fontSize: 11.5, color: _subtleText)),
+                                      ),
                                   ],
-                                ),
+                                ],
                               ),
-                            ],
+                            ),
                             const SizedBox(height: 12),
                             Row(
                               children: [
-                                Expanded(child: _dropdownField(label: 'Слои', value: '$_layersCount', items: const ['1', '2', '4', '6', '8', '10', '12', '16'], onChanged: (v) => setState(() => _layersCount = int.parse(v!)))),
+                                Expanded(
+                                  child: _dropdownField(
+                                    label: 'Слои',
+                                    value: '$_layersCount',
+                                    items: const ['1', '2', '4', '6', '8', '10', '12', '16'],
+                                    onChanged: (v) => setState(() {
+                                      _layersCount = int.parse(v!);
+                                      _recalculateTariffFromSpecs();
+                                    }),
+                                  ),
+                                ),
                                 const SizedBox(width: 10),
-                                Expanded(child: _dropdownField(label: 'Материал', value: _material, items: const ['FR4', 'Алюминий', 'Rogers'], onChanged: (v) => setState(() => _material = v!))),
+                                Expanded(
+                                  child: _dropdownField(
+                                    label: 'Материал',
+                                    value: _material,
+                                    items: const ['FR4', 'Алюминий', 'Rogers'],
+                                    onChanged: (v) => setState(() {
+                                      _material = v!;
+                                      _recalculateTariffFromSpecs();
+                                    }),
+                                  ),
+                                ),
                                 const SizedBox(width: 10),
                                 Expanded(child: _dropdownField(label: 'Толщина, мм', value: _thickness, items: const ['0.5', '0.8', '1.0', '1.5', '2.0', '2.5', '3.0'], onChanged: (v) => setState(() => _thickness = v!))),
                                 const SizedBox(width: 10),
-                                Expanded(child: _dropdownField(label: 'Фольга, мкм', value: _foil, items: const ['12', '18', '35', '50', '70', '105'], onChanged: (v) => setState(() => _foil = v!))),
+                                Expanded(
+                                  child: _dropdownField(
+                                    label: 'Фольга, мкм',
+                                    value: _foil,
+                                    items: const ['12', '18', '35', '50', '70', '105'],
+                                    onChanged: (v) => setState(() {
+                                      _foil = v!;
+                                      _recalculateTariffFromSpecs();
+                                    }),
+                                  ),
+                                ),
                               ],
                             ),
                             const SizedBox(height: 12),
                             Row(
                               children: [
-                                Expanded(child: _dropdownField(label: 'Маска', value: _maskSide, items: const ['С двух сторон', 'С одной стороны', 'Без маски'], onChanged: (v) => setState(() => _maskSide = v!))),
+                                Expanded(
+                                  child: _dropdownField(
+                                    label: 'Маска',
+                                    value: _maskSide,
+                                    items: const ['С двух сторон', 'С одной стороны', 'Без маски'],
+                                    onChanged: (v) => setState(() {
+                                      _maskSide = v!;
+                                      _recalculateTariffFromSpecs();
+                                    }),
+                                  ),
+                                ),
                                 const SizedBox(width: 10),
-                                Expanded(child: _dropdownField(label: 'Цвет маски', value: _maskColor, items: const ['Зеленая', 'Синяя', 'Черная', 'Белая', 'Красная'], onChanged: (v) => setState(() => _maskColor = v!))),
+                                Expanded(
+                                  child: _dropdownField(
+                                    label: 'Цвет маски',
+                                    value: _maskColor,
+                                    items: const ['Зеленая', 'Синяя', 'Черная', 'Белая', 'Красная'],
+                                    onChanged: (v) => setState(() {
+                                      _maskColor = v!;
+                                      _recalculateTariffFromSpecs();
+                                    }),
+                                  ),
+                                ),
                                 const SizedBox(width: 10),
-                                Expanded(child: _dropdownField(label: 'Покрытие', value: _finish, items: const ['HAL', 'Иммерсионное золото', 'Иммерсионное олово', 'Без покрытия'], onChanged: (v) => setState(() => _finish = v!))),
+                                Expanded(
+                                  child: _dropdownField(
+                                    label: 'Покрытие',
+                                    value: _finish,
+                                    items: const ['HAL', 'Иммерсионное золото', 'Иммерсионное олово', 'Без покрытия'],
+                                    onChanged: (v) => setState(() {
+                                      _finish = v!;
+                                      _recalculateTariffFromSpecs();
+                                    }),
+                                  ),
+                                ),
                               ],
                             ),
                             const SizedBox(height: 12),
@@ -984,6 +1437,14 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                               runSpacing: 8,
                               children: [
                                 ElevatedButton.icon(
+                                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF2563EB), foregroundColor: Colors.white),
+                                  icon: _isFetchingWebPrice
+                                      ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                                      : const Icon(Icons.cloud_download_outlined, size: 16),
+                                  label: Text(_isFetchingWebPrice ? 'Считаю на сайте...' : 'Запросить цену с сайта'),
+                                  onPressed: _isFetchingWebPrice ? null : _fetchPriceFromWebsite,
+                                ),
+                                ElevatedButton.icon(
                                   style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF0D9488), foregroundColor: Colors.white),
                                   icon: const Icon(Icons.copy_rounded, size: 16),
                                   label: const Text('Копировать строку КП'),
@@ -1005,8 +1466,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                   onPressed: () => _copyClientEmailTemplate(totalSumWithVat, totalAreaDm2),
                                 ),
                                 OutlinedButton.icon(
-                                  icon: const Icon(Icons.calculate_outlined, size: 16),
-                                  label: const Text('Калькулятор сайта'),
+                                  icon: const Icon(Icons.open_in_new_rounded, size: 16),
+                                  label: const Text('Открыть сайт вручную'),
                                   onPressed: _openPselectroCalculator,
                                 ),
                               ],
@@ -1034,6 +1495,20 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                   ],
                                 ),
                                 const SizedBox(height: 12),
+                                if (_analysis?.hasNestedArchive == true)
+                                  Container(
+                                    margin: const EdgeInsets.only(bottom: 10),
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(
+                                      color: Colors.redAccent.withOpacity(0.14),
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(color: Colors.redAccent.withOpacity(0.45)),
+                                    ),
+                                    child: const Text(
+                                      'Внутри .zip обнаружен вложенный архив (.rar/.zip)! Распакуйте его перед загрузкой, иначе слои и контур не прочитаются автоматически.',
+                                      style: TextStyle(fontSize: 12),
+                                    ),
+                                  ),
                                 if (_analysis?.hasBinaryBrdOnly == true)
                                   Container(
                                     margin: const EdgeInsets.only(bottom: 10),
