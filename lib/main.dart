@@ -307,7 +307,83 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     await OpenFilex.open(path);
   }
 
-  Future?> _parseElectroconnectExcelBlank(String excelPath) async {
+  String _buildExcelParserPythonCode() {
+    final sb = StringBuffer();
+    sb.writeln('# -*- coding: utf-8 -*-');
+    sb.writeln('import json, re, sys');
+    sb.writeln('EXCEL_PATH = sys.argv[1]');
+    sb.writeln('OUT_JSON = sys.argv[2]');
+    sb.writeln('def read_com(path):');
+    sb.writeln('    import win32com.client');
+    sb.writeln('    excel = win32com.client.DispatchEx("Excel.Application")');
+    sb.writeln('    excel.Visible = False');
+    sb.writeln('    excel.DisplayAlerts = False');
+    sb.writeln('    wb = excel.Workbooks.Open(path, ReadOnly=True)');
+    sb.writeln('    ws = wb.Sheets(1)');
+    sb.writeln('    rows = []');
+    sb.writeln('    for r in range(1, 55):');
+    sb.writeln('        rows.append(["" if ws.Cells(r, c).Value is None else str(ws.Cells(r, c).Value).strip() for c in range(1, 15)])');
+    sb.writeln('    wb.Close(False)');
+    sb.writeln('    excel.Quit()');
+    sb.writeln('    return rows');
+    sb.writeln('def read_lib(path):');
+    sb.writeln('    if path.lower().endswith(".xlsx"):');
+    sb.writeln('        import openpyxl');
+    sb.writeln('        wb = openpyxl.load_workbook(path, data_only=True)');
+    sb.writeln('        ws = wb.active');
+    sb.writeln('        return [["" if ws.cell(r, c).value is None else str(ws.cell(r, c).value).strip() for c in range(1, 15)] for r in range(1, 55)]');
+    sb.writeln('    import xlrd');
+    sb.writeln('    wb = xlrd.open_workbook(path)');
+    sb.writeln('    sh = wb.sheet_by_index(0)');
+    sb.writeln('    return [[str(sh.cell_value(r, c)).strip() for c in range(min(15, sh.ncols))] for r in range(min(55, sh.nrows))]');
+    sb.writeln('def main():');
+    sb.writeln('    try:');
+    sb.writeln('        rows = read_lib(EXCEL_PATH)');
+    sb.writeln('    except Exception:');
+    sb.writeln('        try:');
+    sb.writeln('            rows = read_com(EXCEL_PATH)');
+    sb.writeln('        except Exception as e:');
+    sb.writeln('            open(OUT_JSON, "w", encoding="utf-8").write(json.dumps({"ok": False, "error": str(e)}))');
+    sb.writeln('            return');
+    sb.writeln('    data = {"ok": True, "notes": []}');
+    sb.writeln('    for row in rows:');
+    sb.writeln('        ne = [x for x in row if x]');
+    sb.writeln('        if len(ne) < 2: continue');
+    sb.writeln('        lbl, val = ne[0].lower(), ne[1]');
+    sb.writeln('        if re.fullmatch(r"\\d+\\.?", lbl) and len(ne) >= 3:');
+    sb.writeln('            lbl, val = ne[1].lower(), ne[2]');
+    sb.writeln('        if "заказчик" in lbl and "название" in lbl: data["customer"] = val');
+    sb.writeln('        elif "тип заказа" in lbl: data["order_type"] = "Повтор" if "повтор" in val.lower() else "Новый"');
+    sb.writeln('        elif "количество плат" in lbl:');
+    sb.writeln('            m = re.search(r"(\\d+)", val)');
+    sb.writeln('            if m: data["qty"] = int(m.group(1))');
+    sb.writeln('        elif "размеры платы" in lbl or "точные размеры" in lbl:');
+    sb.writeln('            m = re.search(r"(\\d+(?:[.,]\\d+)?)\\s*[xхXХ*]\\s*(\\d+(?:[.,]\\d+)?)", val)');
+    sb.writeln('            if m:');
+    sb.writeln('                data["width"] = float(m.group(1).replace(",", "."))');
+    sb.writeln('                data["height"] = float(m.group(2).replace(",", "."))');
+    sb.writeln('        elif "количество слоев" in lbl or "количество слоёв" in lbl:');
+    sb.writeln('            m = re.search(r"(\\d+)", val)');
+    sb.writeln('            if m: data["layers"] = int(m.group(1))');
+    sb.writeln('        elif "толщина платы" in lbl:');
+    sb.writeln('            m = re.search(r"(\\d+(?:[.,]\\d+)?)", val)');
+    sb.writeln('            if m: data["thickness"] = m.group(1).replace(",", ".")');
+    sb.writeln('        elif "толщина фольги" in lbl:');
+    sb.writeln('            m = re.search(r"(\\d+)", val)');
+    sb.writeln('            if m: data["foil"] = m.group(1)');
+    sb.writeln('        elif "паяльная маска" in lbl: data["mask_side"] = val');
+    sb.writeln('        elif "маркировка" in lbl: data["silk_side"] = val');
+    sb.writeln('        elif lbl.startswith("покрытие") and "разъем" not in lbl and "разъём" not in lbl: data["finish"] = val');
+    sb.writeln('        elif "ножевых" in lbl and val.lower() not in ("нет", "-", "0", ""): data["notes"].append("Покрытие ножевых разъёмов: " + val)');
+    sb.writeln('        elif "вариант мпп" in lbl and val.lower() not in ("нет", "-", ""): data["notes"].append("Вариант МПП: " + val)');
+    sb.writeln('        elif "электроконтрол" in lbl: data["electro_test"] = ("нет" not in val.lower())');
+    sb.writeln('        elif "обработки контура" in lbl: data["contour"] = val.lower()');
+    sb.writeln('    open(OUT_JSON, "w", encoding="utf-8").write(json.dumps(data, ensure_ascii=False))');
+    sb.writeln('if __name__ == "__main__": main()');
+    return sb.toString();
+  }
+
+  Future<dynamic> _parseElectroconnectExcelBlank(String excelPath) async {
     if (!Platform.isWindows) return null;
     try {
       final tempDir = await getTemporaryDirectory();
@@ -315,130 +391,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       final outJson = File('${tempDir.path}\\ec_blank_parsed.json');
       if (outJson.existsSync()) outJson.deleteSync();
 
-      const pyCode = r'''
-# -*- coding: utf-8 -*-
-import json
-import re
-import sys
-
-EXCEL_PATH = sys.argv[1]
-OUT_JSON = sys.argv[2]
-
-def read_rows_via_excel_com(path):
-    import win32com.client
-    excel = win32com.client.DispatchEx("Excel.Application")
-    excel.Visible = False
-    excel.DisplayAlerts = False
-    wb = excel.Workbooks.Open(path, ReadOnly=True)
-    ws = wb.Sheets(1)
-    rows = []
-    for r in range(1, 55):
-        row_vals = []
-        for c in range(1, 15):
-            v = ws.Cells(r, c).Value
-            row_vals.append("" if v is None else str(v).strip())
-        rows.append(row_vals)
-    wb.Close(False)
-    excel.Quit()
-    return rows
-
-def read_rows_via_openpyxl_or_xlrd(path):
-    if path.lower().endswith(".xlsx"):
-        import openpyxl
-        wb = openpyxl.load_workbook(path, data_only=True)
-        ws = wb.active
-        rows = []
-        for r in range(1, 55):
-            rows.append(["" if ws.cell(r, c).value is None else str(ws.cell(r, c).value).strip() for c in range(1, 15)])
-        return rows
-    else:
-        import xlrd
-        wb = xlrd.open_workbook(path)
-        sh = wb.sheet_by_index(0)
-        rows = []
-        for r in range(min(55, sh.nrows)):
-            rows.append([str(sh.cell_value(r, c)).strip() for c in range(min(15, sh.ncols))])
-        return rows
-
-def main():
-    rows = []
-    try:
-        rows = read_rows_via_openpyxl_or_xlrd(EXCEL_PATH)
-    except Exception:
-        try:
-            rows = read_rows_via_excel_com(EXCEL_PATH)
-        except Exception as e:
-            with open(OUT_JSON, "w", encoding="utf-8") as f:
-                json.dump({"ok": False, "error": str(e)}, f, ensure_ascii=False)
-            return
-
-    data = {"ok": True, "notes": []}
-    for row in rows:
-        non_empty = [x for x in row if x]
-        if len(non_empty) < 2:
-            continue
-        label = non_empty[0].lower()
-        val = non_empty[1]
-        if re.fullmatch(r"\d+\.?", label) and len(non_empty) >= 3:
-            label = non_empty[1].lower()
-            val = non_empty[2]
-
-        if "заказчик" in label and "название" in label:
-            data["customer"] = val
-        elif "для кого" in label:
-            data["for_whom"] = val
-        elif "тип заказа" in label:
-            data["order_type"] = "Повтор" if "повтор" in val.lower() else "Новый"
-        elif "имя файла" in label:
-            data["board_name"] = val
-        elif "количество плат" in label:
-            m = re.search(r"(\d+)", val)
-            if m:
-                data["qty"] = int(m.group(1))
-        elif "размеры платы" in label or "точные размеры" in label:
-            m = re.search(r"(\d+(?:[.,]\d+)?)\s*[xхXХ*]\s*(\d+(?:[.,]\d+)?)", val)
-            if m:
-                data["width"] = float(m.group(1).replace(",", "."))
-                data["height"] = float(m.group(2).replace(",", "."))
-        elif "количество слоев" in label or "количество слоёв" in label:
-            m = re.search(r"(\d+)", val)
-            if m:
-                data["layers"] = int(m.group(1))
-        elif "толщина платы" in label:
-            m = re.search(r"(\d+(?:[.,]\d+)?)", val)
-            if m:
-                data["thickness"] = m.group(1).replace(",", ".")
-        elif "толщина фольги" in label:
-            m = re.search(r"(\d+)", val)
-            if m:
-                data["foil"] = m.group(1)
-        elif "паяльная маска" in label:
-            data["mask_side"] = val
-        elif "маркировка" in label:
-            data["silk_side"] = val
-        elif label.startswith("покрытие") and "разъем" not in label and "разъём" not in label:
-            data["finish"] = val
-        elif "ножевых" in label:
-            if val and val.lower() not in ("нет", "-", "0"):
-                data["notes"].append(f"Покрытие ножевых разъёмов: {val}")
-        elif "вариант мпп" in label:
-            if val and val.lower() not in ("нет", "-"):
-                data["notes"].append(f"Вариант МПП: {val}")
-        elif "электроконтрол" in label:
-            data["electro_test"] = ("нет" not in val.lower())
-        elif "обработки контура" in label:
-            data["contour"] = val.lower()
-        elif "материал" in label and ("fr4" in val.lower() or "алюм" in val.lower() or "rogers" in val.lower()):
-            data["material"] = val
-
-    with open(OUT_JSON, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
-
-if __name__ == "__main__":
-    main()
-''';
-
-      await pyFile.writeAsString(pyCode, encoding: utf8);
+      await pyFile.writeAsString(_buildExcelParserPythonCode(), encoding: utf8);
       await Process.run('python', [pyFile.path, excelPath, outJson.path], runInShell: true);
 
       if (outJson.existsSync()) {
@@ -486,6 +439,101 @@ if __name__ == "__main__":
     return false;
   }
 
+  String _buildPlaywrightCalcPythonCode(double w, double h, int qty, String outJsonPath) {
+    final sb = StringBuffer();
+    sb.writeln('# -*- coding: utf-8 -*-');
+    sb.writeln('import json, re');
+    sb.writeln('from playwright.sync_api import sync_playwright');
+    sb.writeln('WIDTH = "${w.toStringAsFixed(1)}"');
+    sb.writeln('HEIGHT = "${h.toStringAsFixed(1)}"');
+    sb.writeln('QTY = "$qty"');
+    sb.writeln('LAYERS = "$_layersCount"');
+    sb.writeln('MASK_SIDE = "$_maskSide"');
+    sb.writeln('FINISH = "$_finish"');
+    sb.writeln('ORDER_TYPE = "$_orderType"');
+    sb.writeln('OUT_JSON = r"$outJsonPath"');
+    sb.writeln('def fill_ctx(ctx, kws, val):');
+    sb.writeln('    inputs = ctx.locator("input")');
+    sb.writeln('    for i in range(inputs.count()):');
+    sb.writeln('        inp = inputs.nth(i)');
+    sb.writeln('        try:');
+    sb.writeln('            if not inp.is_visible(): continue');
+    sb.writeln('            attrs = ((inp.get_attribute("name") or "") + " " + (inp.get_attribute("id") or "") + " " + (inp.get_attribute("placeholder") or "")).lower()');
+    sb.writeln('            near = ""');
+    sb.writeln('            for xp in ["xpath=..", "xpath=../.."]:');
+    sb.writeln('                try:');
+    sb.writeln('                    t = inp.locator(xp).inner_text().lower()');
+    sb.writeln('                    if len(t) < 160: near += " " + t');
+    sb.writeln('                except Exception: pass');
+    sb.writeln('            if any(k in (attrs + " " + near) for k in kws):');
+    sb.writeln('                inp.click()');
+    sb.writeln('                inp.fill("")');
+    sb.writeln('                inp.fill(str(val))');
+    sb.writeln('                inp.dispatch_event("change")');
+    sb.writeln('                return True');
+    sb.writeln('        except Exception: pass');
+    sb.writeln('    return False');
+    sb.writeln('def click_ctx(ctx, variants):');
+    sb.writeln('    for txt in variants:');
+    sb.writeln('        loc = ctx.locator("label, button, span, a").filter(has_text=txt)');
+    sb.writeln('        for i in range(loc.count()):');
+    sb.writeln('            el = loc.nth(i)');
+    sb.writeln('            try:');
+    sb.writeln('                if el.is_visible():');
+    sb.writeln('                    el.click(timeout=1200)');
+    sb.writeln('                    return True');
+    sb.writeln('            except Exception: pass');
+    sb.writeln('    return False');
+    sb.writeln('def main():');
+    sb.writeln('    res = {"ok": False, "price": "", "raw": "", "error": ""}');
+    sb.writeln('    try:');
+    sb.writeln('        with sync_playwright() as p:');
+    sb.writeln('            browser = p.chromium.launch(headless=False)');
+    sb.writeln('            page = browser.new_page(viewport={"width": 1366, "height": 900})');
+    sb.writeln('            page.goto("https://pselectro.ru/calculate-cost/", timeout=60000, wait_until="domcontentloaded")');
+    sb.writeln('            page.wait_for_timeout(3000)');
+    sb.writeln('            ctxs = [page] + list(page.frames)');
+    sb.writeln('            for c in ctxs:');
+    sb.writeln('                click_ctx(c, ["Принять", "Согласен"])');
+    sb.writeln('                if LAYERS == "1": click_ctx(c, ["1 слой", "Односторонн"])');
+    sb.writeln('                elif LAYERS == "2": click_ctx(c, ["2 слоя", "Двухсторонн", "Двусторонн"])');
+    sb.writeln('                else: click_ctx(c, [LAYERS + " сло"])');
+    sb.writeln('                fill_ctx(c, ["длина", "width", "x"], WIDTH)');
+    sb.writeln('                fill_ctx(c, ["ширина", "height", "y"], HEIGHT)');
+    sb.writeln('                fill_ctx(c, ["количество", "тираж", "qty", "шт"], QTY)');
+    sb.writeln('                if ORDER_TYPE == "Повтор": click_ctx(c, ["Повтор"])');
+    sb.writeln('                if MASK_SIDE == "Без маски": click_ctx(c, ["Без маски"])');
+    sb.writeln('                if "золото" in FINISH.lower(): click_ctx(c, ["Иммерсионное золото", "ENIG"])');
+    sb.writeln('            page.wait_for_timeout(1200)');
+    sb.writeln('            for c in ctxs: click_ctx(c, ["Рассчитать", "Посчитать"])');
+    sb.writeln('            page.wait_for_timeout(3500)');
+    sb.writeln('            txt = ""');
+    sb.writeln('            for c in [page] + list(page.frames):');
+    sb.writeln('                try: txt += "\\n" + c.locator("body").inner_text()');
+    sb.writeln('                except Exception: pass');
+    sb.writeln('            found = []');
+    sb.writeln('            for m in re.findall(r"(\\d[\\d\\s]{1,12}(?:[.,]\\d{1,2})?)\\s*(?:руб\\.?|₽)", txt, flags=re.I):');
+    sb.writeln('                cl = re.sub(r"\\s+", " ", m).strip()');
+    sb.writeln('                try:');
+    sb.writeln('                    v = float(re.sub(r"[^\\d.,]", "", cl).replace(",", "."))');
+    sb.writeln('                    if v >= 100.0: found.append((v, cl))');
+    sb.writeln('                except Exception: pass');
+    sb.writeln('            if found:');
+    sb.writeln('                found.sort(key=lambda x: x[0])');
+    sb.writeln('                res["ok"] = True');
+    sb.writeln('                res["price"] = found[-1][1] + " руб."');
+    sb.writeln('                res["raw"] = "Считано со страницы калькулятора pselectro.ru"');
+    sb.writeln('            else:');
+    sb.writeln('                res["error"] = "Калькулятор на сайте не выдал числовую сумму (возможно, на сайте только форма заявки менеджерам)."');
+    sb.writeln('            page.wait_for_timeout(1500)');
+    sb.writeln('            browser.close()');
+    sb.writeln('    except Exception as e:');
+    sb.writeln('        res["error"] = str(e)');
+    sb.writeln('    open(OUT_JSON, "w", encoding="utf-8").write(json.dumps(res, ensure_ascii=False))');
+    sb.writeln('if __name__ == "__main__": main()');
+    return sb.toString();
+  }
+
   Future<void> _fetchPriceFromWebsite() async {
     final w = double.tryParse(_widthController.text.replaceAll(',', '.')) ?? 0;
     final h = double.tryParse(_heightController.text.replaceAll(',', '.')) ?? 0;
@@ -513,162 +561,12 @@ if __name__ == "__main__":
       final resultFile = File('${tempDir.path}\\pselectro_calc_result.json');
       if (resultFile.existsSync()) resultFile.deleteSync();
 
-      final pyScript = '''
-# -*- coding: utf-8 -*-
-import json
-import re
-from playwright.sync_api import sync_playwright
-
-WIDTH = "${w.toStringAsFixed(1)}"
-HEIGHT = "${h.toStringAsFixed(1)}"
-QTY = "$qty"
-LAYERS = "$_layersCount"
-THICKNESS = "$_thickness"
-FOIL = "$_foil"
-MASK_SIDE = "$_maskSide"
-FINISH = "$_finish"
-ORDER_TYPE = "$_orderType"
-OUT_JSON = r"${resultFile.path}"
-
-def fill_in_context(ctx, keywords, value):
-    inputs = ctx.locator("input[type='text'], input[type='number'], input:not([type])")
-    for i in range(inputs.count()):
-        inp = inputs.nth(i)
-        try:
-            if not inp.is_visible():
-                continue
-            attrs = " ".join([
-                inp.get_attribute("name") or "",
-                inp.get_attribute("id") or "",
-                inp.get_attribute("placeholder") or "",
-                inp.get_attribute("aria-label") or "",
-            ]).lower()
-            near_text = ""
-            for xp in ["xpath=..", "xpath=../..", "xpath=../../.."]:
-                try:
-                    t = inp.locator(xp).inner_text().lower()
-                    if len(t) < 160:
-                        near_text += " " + t
-                except Exception:
-                    pass
-            combined = attrs + " " + near_text
-            if any(k in combined for k in keywords):
-                inp.click()
-                inp.fill("")
-                inp.fill(str(value))
-                inp.dispatch_event("input")
-                inp.dispatch_event("change")
-                inp.dispatch_event("blur")
-                return True
-        except Exception:
-            pass
-    return False
-
-def click_in_context(ctx, variants):
-    for txt in variants:
-        loc = ctx.locator(f"label:has-text('{txt}'), button:has-text('{txt}'), span:has-text('{txt}'), a:has-text('{txt}')")
-        for i in range(loc.count()):
-            el = loc.nth(i)
-            try:
-                if el.is_visible():
-                    el.click(timeout=1200)
-                    return True
-            except Exception:
-                pass
-    return False
-
-def extract_prices_from_text(text):
-    found = []
-    for pat in [
-        r"(?:итого|стоимость|сумма|всего|цена)[^\\d\\n]{0,40}(\\d[\\d\\s]{1,12}(?:[.,]\\d{1,2})?)",
-        r"(\\d[\\d\\s]{1,12}(?:[.,]\\d{1,2})?)\\s*(?:руб\\.?|₽)",
-    ]:
-        for m in re.findall(pat, text, flags=re.IGNORECASE):
-            clean = re.sub(r"\\s+", " ", m).strip()
-            num_only = re.sub(r"[^\\d.,]", "", clean).replace(",", ".")
-            try:
-                val = float(num_only)
-                if val >= 100.0:
-                    found.append((val, clean))
-            except Exception:
-                pass
-    return found
-
-def main():
-    res = {"ok": False, "price": "", "raw": "", "error": ""}
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=False)
-            context = browser.new_context(viewport={"width": 1366, "height": 900})
-            page = context.new_page()
-            page.goto("https://pselectro.ru/calculate-cost/", timeout=60000, wait_until="domcontentloaded")
-            page.wait_for_timeout(3000)
-
-            contexts = [page] + list(page.frames)
-            for c in contexts:
-                click_in_context(c, ["Принять", "Согласен", "Понятно"])
-
-            for c in contexts:
-                if LAYERS == "1":
-                    click_in_context(c, ["1 слой", "Односторонн"])
-                elif LAYERS == "2":
-                    click_in_context(c, ["2 слоя", "Двусторонн", "Двухсторонн"])
-                else:
-                    click_in_context(c, [f"{LAYERS} сло"])
-
-                fill_in_context(c, ["длина", "width", "размер x", "x, мм", "x ("], WIDTH)
-                fill_in_context(c, ["ширина", "height", "размер y", "y, мм", "y ("], HEIGHT)
-                fill_in_context(c, ["количество", "тираж", "qty", "count", "шт"], QTY)
-
-                if ORDER_TYPE == "Повтор":
-                    click_in_context(c, ["Повтор"])
-                if MASK_SIDE == "Без маски":
-                    click_in_context(c, ["Без маски"])
-                if "золото" in FINISH.lower():
-                    click_in_context(c, ["Иммерсионное золото", "ENIG"])
-
-            page.wait_for_timeout(1200)
-            for c in contexts:
-                click_in_context(c, ["Рассчитать", "Посчитать", "Расчет"])
-            page.wait_for_timeout(3500)
-
-            all_text = ""
-            for c in [page] + list(page.frames):
-                try:
-                    all_text += "\\n" + c.locator("body").inner_text()
-                except Exception:
-                    pass
-
-            prices = extract_prices_from_text(all_text)
-            if prices:
-                prices.sort(key=lambda x: x[0])
-                best_val, best_str = prices[-1]
-                res["ok"] = True
-                res["price"] = f"{best_str} руб."
-                res["raw"] = "Считано со страницы калькулятора pselectro.ru"
-            else:
-                res["ok"] = False
-                res["error"] = "Калькулятор на сайте не выдал числовую сумму (возможно, на сайте только форма отправки заявки менеджерам)."
-
-            page.wait_for_timeout(2000)
-            browser.close()
-    except Exception as e:
-        res["error"] = str(e)
-
-    with open(OUT_JSON, "w", encoding="utf-8") as f:
-        json.dump(res, f, ensure_ascii=False)
-
-if __name__ == "__main__":
-    main()
-''';
-
-      await scriptFile.writeAsString(pyScript, encoding: utf8);
-
-      final procResult = await Process.run(
-        'python',
-        [scriptFile.path],
-        runInShell: true,
+      await scriptFile.writeAsString(
+        _buildPlaywrightCalcPythonCode(w, h, qty, resultFile.path),
+        encoding: utf8,
       );
+
+      final procResult = await Process.run('python', [scriptFile.path], runInShell: true);
 
       if (resultFile.existsSync()) {
         final jsonStr = await resultFile.readAsString(encoding: utf8);
@@ -724,7 +622,7 @@ if __name__ == "__main__":
       final sessionUnpackDir = Directory('${tempRoot.path}${Platform.pathSeparator}cam_session_${DateTime.now().millisecondsSinceEpoch}');
       sessionUnpackDir.createSync(recursive: true);
 
-      final projectFiles = >[];
+      final List<dynamic> projectFiles = [];
       bool hasUnpackedNestedArchive = false;
 
       if (selectedFile.path.toLowerCase().endsWith('.rar')) {
@@ -796,7 +694,7 @@ if __name__ == "__main__":
         }
       }
 
-      final layers = <GerberLayerInfo>[];
+      final List<GerberLayerInfo> layers = [];
       int copperLayers = 0;
       bool hasTopMask = false;
       bool hasBottomMask = false;
@@ -814,9 +712,10 @@ if __name__ == "__main__":
       double? minTrackMm;
       double? minDrillMm;
       int totalHoles = 0;
-      final drillBreakdown = <double, int>{};
+      final Map<double, int> drillBreakdown = {};
 
-      for (final pf in projectFiles) {
+      for (final item in projectFiles) {
+        final pf = item as Map<String, dynamic>;
         final rawName = pf['name'] as String;
         final fileBytes = pf['bytes'] as List<int>;
         final savedPath = pf['savedPath'] as String;
@@ -951,7 +850,10 @@ if __name__ == "__main__":
 
       Map<String, dynamic>? blankData;
       if (foundExcelPath != null) {
-        blankData = await _parseElectroconnectExcelBlank(foundExcelPath);
+        final rawBlank = await _parseElectroconnectExcelBlank(foundExcelPath);
+        if (rawBlank is Map<String, dynamic>) {
+          blankData = rawBlank;
+        }
       }
 
       if (blankData != null) {
@@ -1100,8 +1002,8 @@ if __name__ == "__main__":
 
   Map<String, dynamic> _parseExcellonDrill(String text) {
     final lines = text.split(RegExp(r'\r?\n'));
-    final toolDiameters = <String, double>{};
-    final toolCounts = <double, int>{};
+    final Map<String, double> toolDiameters = {};
+    final Map<double, int> toolCounts = {};
     bool isMetric = true;
     String? activeTool;
     int total = 0;
@@ -1194,7 +1096,7 @@ if __name__ == "__main__":
   }
 
   List<DfmCheckItem> _evaluateElectroconnectDfm() {
-    final checks = <DfmCheckItem>[];
+    final List<DfmCheckItem> checks = [];
     final w = double.tryParse(_widthController.text.replaceAll(',', '.')) ?? 0;
     final h = double.tryParse(_heightController.text.replaceAll(',', '.')) ?? 0;
     final track = double.tryParse(_minTrackController.text.replaceAll(',', '.')) ?? 0;
@@ -1406,17 +1308,14 @@ if __name__ == "__main__":
         ? '• Стоимость партии по калькулятору сайта: $_webPriceResult'
         : '• Предварительная стоимость партии с учетом НДС 22%: ${totalWithVat.toStringAsFixed(2)} руб.';
 
-    final text = '''Здравствуйте!
-Благодарим за обращение на завод «ЭЛЕКТРОконнект».
-
-По результатам проверки производственных файлов проекта «$title» ($qty шт., общая площадь партии: ${totalDm2.toStringAsFixed(2)} дм²):
-• Габариты и класс точности соответствуют стандартам технологического регламента.
-$priceLine
-
-Ждем ваше подтверждение запуска в производство!
-
-С уважением,
-ООО «ЭЛЕКТРОконнект»''';
+    final text = 'Здравствуйте!\n'
+        'Благодарим за обращение на завод «ЭЛЕКТРОконнект».\n\n'
+        'По результатам проверки производственных файлов проекта «$title» ($qty шт., общая площадь партии: ${totalDm2.toStringAsFixed(2)} дм²):\n'
+        '• Габариты и класс точности соответствуют стандартам технологического регламента.\n'
+        '$priceLine\n\n'
+        'Ждем ваше подтверждение запуска в производство!\n\n'
+        'С уважением,\n'
+        'ООО «ЭЛЕКТРОконнект»';
 
     Clipboard.setData(ClipboardData(text: text));
     _showSnack('Шаблон письма клиенту скопирован в буфер обмена!');
@@ -2057,4 +1956,3 @@ $priceLine
     );
   }
 }
-// === END OF FILE ===
