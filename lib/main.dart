@@ -213,6 +213,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     required String maskSide,
     required String orderType,
     required String urgency,
+    bool hasCustomStack = false,
   }) {
     double dm2Rate;
     double setupFee;
@@ -246,6 +247,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     if (material == 'FR4 Tg170') dm2Rate *= 1.15;
     if (material == 'Алюминий') dm2Rate *= 1.35;
     if (material == 'Rogers') dm2Rate *= 2.80;
+    if (hasCustomStack && layers >= 4) dm2Rate *= 1.10;
 
     final foilInt = int.tryParse(foil) ?? 18;
     if (foilInt >= 70) {
@@ -279,6 +281,16 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     return (dm2Rate: dm2Rate, setupFee: setupFee);
   }
 
+  bool _hasCustomStackOrPressing(String notesText, int layers) {
+    if (layers < 4) return false;
+    final low = notesText.toLowerCase();
+    return low.contains('попарн') ||
+        low.contains('прессован') ||
+        low.contains('стек заказчика') ||
+        low.contains('между слоями') ||
+        low.contains('импеданс');
+  }
+
   void _recalculateTariffFromSpecs({bool force = false}) {
     if (_manualPriceOverride && !force) return;
 
@@ -291,6 +303,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       maskSide: _maskSide,
       orderType: _orderType,
       urgency: _urgency,
+      hasCustomStack: _hasCustomStackOrPressing(_notesController.text, _layersCount),
     );
 
     _basePriceDm2Controller.text = rates.dm2Rate.toStringAsFixed(1);
@@ -341,7 +354,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   String _normalizeUrgency(String? raw) {
     final u = (raw ?? '').toLowerCase();
     if (u.contains('супер')) return 'СуперЭкспресс';
-    if (u.contains('экспресс')) return 'Экспресс';
+    if (u.contains('экспресс') || u.contains('срочн')) return 'Экспресс';
     return 'Серийный';
   }
 
@@ -359,8 +372,12 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       _urgency = _normalizeUrgency(board['urgency'].toString());
     }
     if (board['width'] != null && board['height'] != null) {
-      _widthController.text = (board['width'] as num).toDouble().toStringAsFixed(1);
-      _heightController.text = (board['height'] as num).toDouble().toStringAsFixed(1);
+      final wVal = (board['width'] as num).toDouble();
+      final hVal = (board['height'] as num).toDouble();
+      if (wVal > 0 && hVal > 0) {
+        _widthController.text = wVal.toStringAsFixed(1);
+        _heightController.text = hVal.toStringAsFixed(1);
+      }
     }
     if (board['qty'] != null) {
       _qtyController.text = board['qty'].toString();
@@ -383,19 +400,33 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     }
     if (board['mask_side'] != null) {
       final ms = board['mask_side'].toString().toLowerCase();
-      if (ms.contains('двух')) {
+      if (ms.contains('двух') || ms.contains('2')) {
         _maskSide = 'С двух сторон';
-      } else if (ms.contains('одной') || ms.contains('верх') || ms.contains('низ')) {
+      } else if (ms.contains('одной') || ms.contains('верх') || ms.contains('низ') || ms.contains('1')) {
         _maskSide = 'С одной стороны';
       } else if (ms.contains('без') || ms.contains('нет')) {
         _maskSide = 'Без маски';
       }
     }
+    if (board['mask_color'] != null) {
+      final mc = board['mask_color'].toString().toLowerCase();
+      if (mc.contains('син')) {
+        _maskColor = 'Синяя';
+      } else if (mc.contains('черн') || mc.contains('чёрн')) {
+        _maskColor = 'Черная';
+      } else if (mc.contains('бел')) {
+        _maskColor = 'Белая';
+      } else if (mc.contains('красн')) {
+        _maskColor = 'Красная';
+      } else {
+        _maskColor = 'Зеленая';
+      }
+    }
     if (board['silk_side'] != null) {
       final ss = board['silk_side'].toString().toLowerCase();
-      if (ss.contains('двух')) {
+      if (ss.contains('двух') || ss.contains('2')) {
         _silkSide = 'С двух сторон';
-      } else if (ss.contains('одной') || ss.contains('верх') || ss.contains('низ')) {
+      } else if (ss.contains('одной') || ss.contains('верх') || ss.contains('низ') || ss.contains('1')) {
         _silkSide = 'С одной стороны';
       } else if (ss.contains('без') || ss.contains('нет')) {
         _silkSide = 'Без маркировки';
@@ -415,7 +446,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     }
     if (board['contour'] != null) {
       final cnt = board['contour'].toString().toLowerCase();
-      if (cnt.contains('скрайб')) {
+      if (cnt.contains('скрайб') || cnt.contains('v-cut')) {
         _contour = 'скрайбирование';
       } else {
         _contour = 'фрезеровка';
@@ -425,7 +456,18 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       _electroTest = board['electro_test'] == true;
     }
     if (board['notes'] is List) {
-      _notesController.text = (board['notes'] as List).join('; ');
+      final rawNotes = (board['notes'] as List).map((e) => e.toString()).toList();
+      // Фильтруем МПП-специфичные требования для 1-2 слойных плат
+      final filtered = rawNotes.where((n) {
+        if (_layersCount < 4) {
+          final nl = n.toLowerCase();
+          if (nl.contains('попарн') || nl.contains('вариант мпп') || nl.contains('между слоями') || nl.contains('прессован')) {
+            return false;
+          }
+        }
+        return true;
+      }).toList();
+      _notesController.text = filtered.join('; ');
     }
     _manualPriceOverride = false;
     _webPriceResult = null;
@@ -452,29 +494,66 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     sb.writeln(r'        __import__(pkg)');
     sb.writeln(r'    except ImportError:');
     sb.writeln(r'        subprocess.run([sys.executable, "-m", "pip", "install", "-q", pkg], check=False)');
-    sb.writeln(r'def read_lib(path):');
+    sb.writeln(r'def read_excel_with_colors(path):');
+    sb.writeln(r'    rows_text = []');
+    sb.writeln(r'    red_notes = []');
     sb.writeln(r'    if path.lower().endswith(".xlsx"):');
     sb.writeln(r'        ensure_pkg("openpyxl")');
     sb.writeln(r'        import openpyxl');
     sb.writeln(r'        wb = openpyxl.load_workbook(path, data_only=True)');
     sb.writeln(r'        ws = wb.active');
-    sb.writeln(r'        return [["" if ws.cell(r, c).value is None else str(ws.cell(r, c).value).strip() for c in range(1, 32)] for r in range(1, 60)]');
+    sb.writeln(r'        for r in range(1, min(75, ws.max_row + 1)):');
+    sb.writeln(r'            r_vals = []');
+    sb.writeln(r'            for c in range(1, min(32, ws.max_column + 1)):');
+    sb.writeln(r'                cell = ws.cell(r, c)');
+    sb.writeln(r'                val = "" if cell.value is None else str(cell.value).strip()');
+    sb.writeln(r'                r_vals.append(val)');
+    sb.writeln(r'                if val and len(val) > 3:');
+    sb.writeln(r'                    try:');
+    sb.writeln(r'                        col = cell.font.color if cell.font else None');
+    sb.writeln(r'                        rgb = str(col.rgb).upper() if col and col.rgb else ""');
+    sb.writeln(r'                        if rgb.endswith("FF0000") or rgb.endswith("C00000") or rgb.endswith("ED1C24"):');
+    sb.writeln(r'                            red_notes.append("[КРАСНЫМ В EXCEL]: " + val)');
+    sb.writeln(r'                    except Exception:');
+    sb.writeln(r'                        pass');
+    sb.writeln(r'            rows_text.append(r_vals)');
+    sb.writeln(r'        return rows_text, red_notes');
     sb.writeln(r'    ensure_pkg("xlrd")');
     sb.writeln(r'    import xlrd');
-    sb.writeln(r'    wb = xlrd.open_workbook(path)');
+    sb.writeln(r'    try:');
+    sb.writeln(r'        wb = xlrd.open_workbook(path, formatting_info=True)');
+    sb.writeln(r'        has_fmt = True');
+    sb.writeln(r'    except Exception:');
+    sb.writeln(r'        wb = xlrd.open_workbook(path)');
+    sb.writeln(r'        has_fmt = False');
     sb.writeln(r'    sh = wb.sheet_by_index(0)');
-    sb.writeln(r'    return [[str(sh.cell_value(r, c)).strip() for c in range(min(32, sh.ncols))] for r in range(min(60, sh.nrows))]');
+    sb.writeln(r'    for r in range(min(75, sh.nrows)):');
+    sb.writeln(r'        r_vals = []');
+    sb.writeln(r'        for c in range(min(32, sh.ncols)):');
+    sb.writeln(r'            val = str(sh.cell_value(r, c)).strip()');
+    sb.writeln(r'            r_vals.append(val)');
+    sb.writeln(r'            if has_fmt and val and len(val) > 3:');
+    sb.writeln(r'                try:');
+    sb.writeln(r'                    xf = wb.xf_list[sh.cell_xf_index(r, c)]');
+    sb.writeln(r'                    font = wb.font_list[xf.font_index]');
+    sb.writeln(r'                    rgb = wb.colour_map.get(font.colour_index)');
+    sb.writeln(r'                    if rgb and rgb[0] >= 180 and rgb[1] <= 70 and rgb[2] <= 70:');
+    sb.writeln(r'                        red_notes.append("[КРАСНЫМ В EXCEL]: " + val)');
+    sb.writeln(r'                except Exception:');
+    sb.writeln(r'                    pass');
+    sb.writeln(r'        rows_text.append(r_vals)');
+    sb.writeln(r'    return rows_text, red_notes');
     sb.writeln(r'def clean_num_str(s):');
     sb.writeln(r'    return re.sub(r"\.0$", "", s.strip())');
     sb.writeln(r'def main():');
     sb.writeln(r'    try:');
-    sb.writeln(r'        rows = read_lib(EXCEL_PATH)');
+    sb.writeln(r'        rows, red_notes = read_excel_with_colors(EXCEL_PATH)');
     sb.writeln(r'    except Exception as e:');
     sb.writeln(r'        open(OUT_JSON, "w", encoding="utf-8").write(json.dumps({"ok": False, "error": str(e)}))');
     sb.writeln(r'        return');
     sb.writeln(r'    customer = ""');
     sb.writeln(r'    global_material = None');
-    sb.writeln(r'    global_notes = []');
+    sb.writeln(r'    global_notes = list(red_notes)');
     sb.writeln(r'    num_boards = 1');
     sb.writeln(r'    for row in rows:');
     sb.writeln(r'        ne = [x for x in row if x]');
@@ -484,18 +563,20 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     sb.writeln(r'        elif "rogers" in rj: global_material = "Rogers"');
     sb.writeln(r'        elif "алюмин" in rj: global_material = "Алюминий"');
     sb.writeln(r'        if "полуотверст" in rj: global_notes.append("Металлизированные полуотверстия")');
+    sb.writeln(r'        if "зенков" in rj: global_notes.append("Требуется зенковка отверстий")');
+    sb.writeln(r'        if "импеданс" in rj: global_notes.append("Контроль волнового сопротивления (импеданс)")');
     sb.writeln(r'        if "фаска" in rj:');
     sb.writeln(r'            for x in ne:');
     sb.writeln(r'                if "фаска" in x.lower(): global_notes.append(x)');
-    sb.writeln(r'        if "иное:" in rj or rj.startswith("иное"):');
-    sb.writeln(r'            extra = [x for x in ne if "иное" not in x.lower()]');
-    sb.writeln(r'            if extra: global_notes.append("Иное: " + " ".join(extra))');
+    sb.writeln(r'        if "иное:" in rj or rj.startswith("иное") or "примечан" in rj or "особые требован" in rj:');
+    sb.writeln(r'            extra = [x for x in ne if not re.match(r"^(иное|примечан|особые)", x.lower())]');
+    sb.writeln(r'            if extra: global_notes.append("Требование: " + " ".join(extra))');
     sb.writeln(r'        lbl = ne[0].lower()');
     sb.writeln(r'        vals = ne[1:]');
     sb.writeln(r'        if re.fullmatch(r"\d+\.?", lbl) and len(ne) >= 3:');
     sb.writeln(r'            lbl = ne[1].lower()');
     sb.writeln(r'            vals = ne[2:]');
-    sb.writeln(r'        if ("размеры платы" in lbl or "точные размеры" in lbl or "имя файла" in lbl) and len(vals) > num_boards:');
+    sb.writeln(r'        if ("размеры платы" in lbl or "точные размеры" in lbl or "габарит" in lbl or "имя файла" in lbl or "наименован" in lbl) and len(vals) > num_boards:');
     sb.writeln(r'            num_boards = min(len(vals), 12)');
     sb.writeln(r'    boards = [{"notes": list(global_notes)} for _ in range(num_boards)]');
     sb.writeln(r'    if global_material:');
@@ -506,7 +587,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     sb.writeln(r'        lbl, vals = ne[0].lower(), ne[1:]');
     sb.writeln(r'        if re.fullmatch(r"\d+\.?", lbl) and len(ne) >= 3:');
     sb.writeln(r'            lbl, vals = ne[1].lower(), ne[2:]');
-    sb.writeln(r'        if "заказчик" in lbl and "название" in lbl:');
+    sb.writeln(r'        if ("заказчик" in lbl and "название" in lbl) or lbl in ("заказчик", "организация", "предприятие", "компания"):');
     sb.writeln(r'            customer = vals[0]');
     sb.writeln(r'            for b in boards: b["customer"] = customer');
     sb.writeln(r'            continue');
@@ -516,26 +597,28 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     sb.writeln(r'            if "тип заказа" in lbl: b["order_type"] = "Повтор" if "повтор" in val.lower() else "Новый"');
     sb.writeln(r'            elif "срочность" in lbl or "вариант и срочность" in lbl:');
     sb.writeln(r'                b["urgency"] = val');
-    sb.writeln(r'            elif "имя файла" in lbl: b["board_name"] = clean_num_str(val)');
-    sb.writeln(r'            elif "количество плат" in lbl:');
+    sb.writeln(r'            elif "имя файла" in lbl or "децимальн" in lbl or "обозначен" in lbl:');
+    sb.writeln(r'                b["board_name"] = clean_num_str(val)');
+    sb.writeln(r'            elif "количество плат" in lbl or "тираж" in lbl:');
     sb.writeln(r'                m = re.search(r"(\d+)", val)');
     sb.writeln(r'                if m: b["qty"] = int(m.group(1))');
-    sb.writeln(r'            elif "размеры платы" in lbl or "точные размеры" in lbl:');
-    sb.writeln(r'                m = re.search(r"(\d+(?:[.,]\d+)?)\s*[xхXХ*]\s*(\d+(?:[.,]\d+)?)", val)');
+    sb.writeln(r'            elif "размеры платы" in lbl or "точные размеры" in lbl or "габарит" in lbl:');
+    sb.writeln(r'                m = re.search(r"(\d+(?:[.,]\d+)?)\s*[xхXХ*×]\s*(\d+(?:[.,]\d+)?)", val)');
     sb.writeln(r'                if m:');
     sb.writeln(r'                    b["width"] = float(m.group(1).replace(",", "."))');
     sb.writeln(r'                    b["height"] = float(m.group(2).replace(",", "."))');
-    sb.writeln(r'            elif "количество слоев" in lbl or "количество слоёв" in lbl:');
+    sb.writeln(r'            elif "количество слоев" in lbl or "количество слоёв" in lbl or "слойност" in lbl:');
     sb.writeln(r'                m = re.search(r"(\d+)", val)');
     sb.writeln(r'                if m: b["layers"] = int(m.group(1))');
-    sb.writeln(r'            elif "толщина платы" in lbl:');
+    sb.writeln(r'            elif "толщина платы" in lbl or "толщина стеклотекстолита" in lbl:');
     sb.writeln(r'                m = re.search(r"(\d+(?:[.,]\d+)?)", val)');
     sb.writeln(r'                if m: b["thickness"] = m.group(1).replace(",", ".")');
-    sb.writeln(r'            elif "толщина фольги" in lbl:');
+    sb.writeln(r'            elif "толщина фольги" in lbl or "фольга" in lbl:');
     sb.writeln(r'                m = re.search(r"(\d+)", val)');
     sb.writeln(r'                if m: b["foil"] = m.group(1)');
-    sb.writeln(r'            elif "паяльная маска" in lbl: b["mask_side"] = val');
-    sb.writeln(r'            elif "маркировка" in lbl: b["silk_side"] = val');
+    sb.writeln(r'            elif "цвет маски" in lbl or "цвет паяльной" in lbl: b["mask_color"] = val');
+    sb.writeln(r'            elif "паяльная маска" in lbl or lbl.startswith("маска"): b["mask_side"] = val');
+    sb.writeln(r'            elif "маркировка" in lbl or "шелкограф" in lbl: b["silk_side"] = val');
     sb.writeln(r'            elif "покрыт" in lbl and "ножев" not in lbl and "разъем" not in lbl and "разъём" not in lbl:');
     sb.writeln(r'                b["finish"] = val');
     sb.writeln(r'            elif "ножевых" in lbl and val.lower() not in ("нет", "-", "0", "", "отсутствует", "отсутствуют"):');
@@ -544,14 +627,15 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     sb.writeln(r'                b["notes"].append("Вариант МПП: " + val)');
     sb.writeln(r'            elif "переходные отверстия" in lbl and val.lower() not in ("нет", "-", ""):');
     sb.writeln(r'                b["notes"].append("Переходные отверстия: " + val)');
-    sb.writeln(r'            elif "электроконтрол" in lbl: b["electro_test"] = ("нет" not in val.lower())');
-    sb.writeln(r'            elif "обработки контура" in lbl: b["contour"] = val.lower()');
+    sb.writeln(r'            elif "электроконтрол" in lbl or "электротест" in lbl: b["electro_test"] = ("нет" not in val.lower())');
+    sb.writeln(r'            elif "обработки контура" in lbl or "контур" in lbl: b["contour"] = val.lower()');
     sb.writeln(r'    for b in boards:');
     sb.writeln(r'        seen = set()');
     sb.writeln(r'        u = []');
     sb.writeln(r'        for n in b["notes"]:');
-    sb.writeln(r'            if n not in seen:');
-    sb.writeln(r'                seen.add(n)');
+    sb.writeln(r'            norm = n.replace("[КРАСНЫМ В EXCEL]: ", "").strip()');
+    sb.writeln(r'            if norm not in seen:');
+    sb.writeln(r'                seen.add(norm)');
     sb.writeln(r'                u.append(n)');
     sb.writeln(r'        b["notes"] = u');
     sb.writeln(r'    open(OUT_JSON, "w", encoding="utf-8").write(json.dumps({"ok": True, "boards": boards}, ensure_ascii=False))');
@@ -1263,6 +1347,36 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     final track = double.tryParse(_minTrackController.text.replaceAll(',', '.')) ?? 0;
     final drill = double.tryParse(_minHoleController.text.replaceAll(',', '.')) ?? 0;
     final thick = double.tryParse(_thickness) ?? 1.5;
+    final notesLow = _notesController.text.toLowerCase();
+
+    // Проверка попарного прессования и нестандартного стека МПП
+    if (_hasCustomStackOrPressing(_notesController.text, _layersCount)) {
+      final pairMatch = RegExp(r'(\d+[.,]\d+)\s*[xхXХ*]\s*2').firstMatch(notesLow);
+      String stackDetail = 'Требуется согласование с технологом и контроль симметрии заготовок МПП.';
+      if (pairMatch != null) {
+        final coreMm = double.tryParse(pairMatch.group(1)!.replaceAll(',', '.')) ?? 0;
+        if (coreMm > 0) {
+          final coresSum = coreMm * 2;
+          final prepregRest = thick - coresSum;
+          stackDetail = prepregRest > 0.05
+              ? 'Ядра ${coreMm.toStringAsFixed(2)}×2 = ${coresSum.toStringAsFixed(2)} мм; остаток на препрег и фольгу: ${prepregRest.toStringAsFixed(2)} мм (при общей толщине ${thick.toStringAsFixed(1)} мм).'
+              : 'Внимание: сумма ядер (${coresSum.toStringAsFixed(2)} мм) превышает или равна общей толщине платы (${thick.toStringAsFixed(1)} мм)!';
+        }
+      }
+      checks.add(DfmCheckItem(
+        title: 'Нестандартный стек / попарное прессование МПП',
+        detail: stackDetail,
+        level: 'warn',
+      ));
+    }
+
+    if (notesLow.contains('красным в excel')) {
+      checks.add(DfmCheckItem(
+        title: 'В бланке есть выделенные красным требования заказчика!',
+        detail: 'Проверьте поле «Примечание для ТЗ» внизу формы перед запуском в работу.',
+        level: 'warn',
+      ));
+    }
 
     final maxSide = math.max(w, h);
     final minSide = math.min(w, h);
@@ -1375,10 +1489,13 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     final maskPart = _maskSide == 'Без маски' ? 'Без маски' : '$_maskSide $_maskColor';
     final silkPart = _silkSide == 'Без маркировки' ? 'Без маркировки' : '$_silkSide $_silkColor';
     final testPart = _electroTest ? 'Эл. тест.' : 'Без эл. теста.';
+    final stackTag = _hasCustomStackOrPressing(_notesController.text, _layersCount)
+        ? ' [СТЕК ЗАКАЗЧИКА / ПОПАРНОЕ ПРЕССОВАНИЕ]'
+        : '';
 
     return '$_orderType ($_urgency); $_layersCount сл; ${w}х${h}мм; $_contour; '
         '$_material-${_thickness}мм-${_foil}мкм; '
-        'маска: $maskPart; маркировка: $silkPart; $_finish; $testPart';
+        'маска: $maskPart; маркировка: $silkPart; $_finish; $testPart$stackTag';
   }
 
   Future<void> _exportConstructorTzFile() async {
@@ -1430,7 +1547,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     sb.writeln('• Электроконтроль:       ${_electroTest ? "Да (Flying Probe)" : "Нет"}');
     sb.writeln('• Мин. дорожка / сверло: ${_minTrackController.text.trim()} мм / Ø ${_minHoleController.text.trim()} мм');
     if (_notesController.text.trim().isNotEmpty) {
-      sb.writeln('• Примечание менеджера:  ${_notesController.text.trim()}');
+      sb.writeln('• Примечание / стек:     ${_notesController.text.trim()}');
     }
     sb.writeln('--------------------------------------------------------------------');
     sb.writeln('РЕЗУЛЬТАТ DFM-ПРОВЕРКИ (РЕГЛАМЕНТ ЭЛЕКТРОКОННЕКТ):');
@@ -1519,6 +1636,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         silkSide = 'Без маркировки';
       }
 
+      final notesStr = (b['notes'] is List) ? (b['notes'] as List).join('; ') : '';
+      final hasCustom = _hasCustomStackOrPressing(notesStr, layers);
+
       final rates = _computeRatesForSpecs(
         layers: layers,
         material: mat,
@@ -1528,6 +1648,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         maskSide: maskSide,
         orderType: oType,
         urgency: urg,
+        hasCustomStack: hasCustom,
       );
 
       final singleDm2 = (w * h) / 10000.0;
@@ -1542,8 +1663,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       sb.writeln('• Параметры: $oType ($urg); $layers сл; ${w.toStringAsFixed(1)}x${h.toStringAsFixed(1)}мм; $mat-$thickмм-$foilмкм; маска: $maskSide; марк: $silkSide; $fin');
       sb.writeln('• Тираж:     $qty шт. (площадь партии: ${totalDm2.toStringAsFixed(2)} дм²)');
       sb.writeln('• Стоимость: ${totalWithVat.toStringAsFixed(2)} руб. с НДС (тариф ${rates.dm2Rate.toStringAsFixed(0)} р/дм² + подготовка ${rates.setupFee.toStringAsFixed(0)} р)');
-      if (b['notes'] is List && (b['notes'] as List).isNotEmpty) {
-        sb.writeln('• Примечания: ${(b['notes'] as List).join('; ')}');
+      if (notesStr.isNotEmpty) {
+        sb.writeln('• Примечания: $notesStr');
       }
       sb.writeln('');
     }
@@ -1597,12 +1718,14 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     IconData? icon,
     TextInputType keyboardType = TextInputType.text,
     bool isPriceField = false,
+    bool triggerRecalc = false,
   }) {
     return TextField(
       controller: controller,
       keyboardType: keyboardType,
       onChanged: (_) => setState(() {
         if (isPriceField) _manualPriceOverride = true;
+        if (triggerRecalc) _recalculateTariffFromSpecs();
       }),
       style: const TextStyle(fontSize: 14),
       decoration: InputDecoration(
@@ -1680,7 +1803,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text('ЭЛЕКТРОконнект — CAM & DFM Контроль (Кувезенков А.А.)', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-                Text('Автопарсинг бланков XLS, Gerber, RAR, ZIP, PCB • Расчет цены и ТЗ', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                Text('Автопарсинг бланков XLS/XLSX (включая красный шрифт), Gerber, RAR, ZIP, PCB', style: TextStyle(fontSize: 11, color: Colors.grey)),
               ],
             ),
           ],
@@ -2028,7 +2151,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                               ],
                             ),
                             const SizedBox(height: 12),
-                            _inputField(controller: _notesController, label: 'Примечание для ТЗ', icon: Icons.notes_rounded),
+                            _inputField(controller: _notesController, label: 'Примечание для ТЗ (стек, прессование, красные пометки)', icon: Icons.notes_rounded, triggerRecalc: true),
                             const SizedBox(height: 16),
                             const Text('Готовая строка спецификации (для 1С / КП):', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold)),
                             const SizedBox(height: 6),
