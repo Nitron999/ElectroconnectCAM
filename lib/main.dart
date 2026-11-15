@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
@@ -314,7 +315,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       final outJson = File('${tempDir.path}\\ec_blank_parsed.json');
       if (outJson.existsSync()) outJson.deleteSync();
 
-      const pyCode = '''
+      const pyCode = r'''
 # -*- coding: utf-8 -*-
 import json
 import re
@@ -378,7 +379,7 @@ def main():
             continue
         label = non_empty[0].lower()
         val = non_empty[1]
-        if re.fullmatch(r"\\d+\\.?", label) and len(non_empty) >= 3:
+        if re.fullmatch(r"\d+\.?", label) and len(non_empty) >= 3:
             label = non_empty[1].lower()
             val = non_empty[2]
 
@@ -391,24 +392,24 @@ def main():
         elif "имя файла" in label:
             data["board_name"] = val
         elif "количество плат" in label:
-            m = re.search(r"(\\d+)", val)
+            m = re.search(r"(\d+)", val)
             if m:
                 data["qty"] = int(m.group(1))
         elif "размеры платы" in label or "точные размеры" in label:
-            m = re.search(r"(\\d+(?:[.,]\\d+)?)\\s*[xхXХ*]\\s*(\\d+(?:[.,]\\d+)?)", val)
+            m = re.search(r"(\d+(?:[.,]\d+)?)\s*[xхXХ*]\s*(\d+(?:[.,]\d+)?)", val)
             if m:
                 data["width"] = float(m.group(1).replace(",", "."))
                 data["height"] = float(m.group(2).replace(",", "."))
         elif "количество слоев" in label or "количество слоёв" in label:
-            m = re.search(r"(\\d+)", val)
+            m = re.search(r"(\d+)", val)
             if m:
                 data["layers"] = int(m.group(1))
         elif "толщина платы" in label:
-            m = re.search(r"(\\d+(?:[.,]\\d+)?)", val)
+            m = re.search(r"(\d+(?:[.,]\d+)?)", val)
             if m:
                 data["thickness"] = m.group(1).replace(",", ".")
         elif "толщина фольги" in label:
-            m = re.search(r"(\\d+)", val)
+            m = re.search(r"(\d+)", val)
             if m:
                 data["foil"] = m.group(1)
         elif "паяльная маска" in label:
@@ -723,7 +724,7 @@ if __name__ == "__main__":
       final sessionUnpackDir = Directory('${tempRoot.path}${Platform.pathSeparator}cam_session_${DateTime.now().millisecondsSinceEpoch}');
       sessionUnpackDir.createSync(recursive: true);
 
-      final List> projectFiles = [];
+      final projectFiles = >[];
       bool hasUnpackedNestedArchive = false;
 
       if (selectedFile.path.toLowerCase().endsWith('.rar')) {
@@ -795,7 +796,7 @@ if __name__ == "__main__":
         }
       }
 
-      final List<GerberLayerInfo> layers = [];
+      final layers = <GerberLayerInfo>[];
       int copperLayers = 0;
       bool hasTopMask = false;
       bool hasBottomMask = false;
@@ -813,7 +814,7 @@ if __name__ == "__main__":
       double? minTrackMm;
       double? minDrillMm;
       int totalHoles = 0;
-      final Map<double, int> drillBreakdown = {};
+      final drillBreakdown = <double, int>{};
 
       for (final pf in projectFiles) {
         final rawName = pf['name'] as String;
@@ -925,9 +926,9 @@ if __name__ == "__main__":
             }
           } else if (role.contains('меди') || role.contains('Контур') || upper.endsWith('.GBR') || upper.endsWith('.PHO')) {
             final gerberStats = _parseGerberGeometry(textContent);
-            final gTrack = gerberStats['minTrackMm'] as double?;
-            final gWidth = gerberStats['widthMm'] as double?;
-            final gHeight = gerberStats['heightMm'] as double?;
+            final gTrack = gerberStats['minTrackMm'];
+            final gWidth = gerberStats['widthMm'];
+            final gHeight = gerberStats['heightMm'];
 
             if (gTrack != null && (minTrackMm == null || gTrack < minTrackMm)) {
               minTrackMm = gTrack;
@@ -1099,8 +1100,8 @@ if __name__ == "__main__":
 
   Map<String, dynamic> _parseExcellonDrill(String text) {
     final lines = text.split(RegExp(r'\r?\n'));
-    final Map<String, double> toolDiameters = {};
-    final Map<double, int> toolCounts = {};
+    final toolDiameters = <String, double>{};
+    final toolCounts = <double, int>{};
     bool isMetric = true;
     String? activeTool;
     int total = 0;
@@ -1193,7 +1194,7 @@ if __name__ == "__main__":
   }
 
   List<DfmCheckItem> _evaluateElectroconnectDfm() {
-    final List<DfmCheckItem> checks = [];
+    final checks = <DfmCheckItem>[];
     final w = double.tryParse(_widthController.text.replaceAll(',', '.')) ?? 0;
     final h = double.tryParse(_heightController.text.replaceAll(',', '.')) ?? 0;
     final track = double.tryParse(_minTrackController.text.replaceAll(',', '.')) ?? 0;
@@ -2056,3 +2057,4 @@ $priceLine
     );
   }
 }
+// === END OF FILE ===
