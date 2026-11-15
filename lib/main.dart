@@ -168,8 +168,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   final TextEditingController _notesController = TextEditingController();
   final TextEditingController _managerController = TextEditingController(text: 'Крылова Людмила Борисовна');
 
-  final TextEditingController _basePriceDm2Controller = TextEditingController(text: '466.0');
-  final TextEditingController _setupFeeController = TextEditingController(text: '2406.0');
+  final TextEditingController _basePriceDm2Controller = TextEditingController(text: '439.0');
+  final TextEditingController _setupFeeController = TextEditingController(text: '1800.0');
   bool _manualPriceOverride = false;
 
   bool _isFetchingWebPrice = false;
@@ -205,6 +205,10 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     );
   }
 
+  /// Расчёт по официальному прайс-листу ООО «ЭЛЕКТРОконнект» от 25.09.2026:
+  /// - Базовые ставки за дм² (плата + маска 2 ст. 49р + марк. 1 ст. 20р)
+  /// - Подготовка: 300р/слой (медь + маска) + 600р маркировка (при повторе = 0)
+  /// - При сочетании нескольких коэффициентов сложности берётся ОДИН наибольший!
   ({double dm2Rate, double setupFee}) _computeRatesForSpecs({
     required int layers,
     required String material,
@@ -212,67 +216,142 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     required String finish,
     required String maskColor,
     required String maskSide,
+    required String silkSide,
     required String orderType,
     required String urgency,
-    bool hasCustomStack = false,
+    double widthMm = 0,
+    double heightMm = 0,
+    double minTrackMm = 0.15,
+    double minDrillMm = 0.30,
+    String notesText = '',
   }) {
-    double dm2Rate;
-    double setupFee;
+    double baseBoardDm2;
     switch (layers) {
       case 1:
-        dm2Rate = 340.0;
-        setupFee = 1800.0;
+        baseBoardDm2 = 290.0;
         break;
       case 2:
-        dm2Rate = 466.0;
-        setupFee = 2406.0;
+        baseBoardDm2 = 370.0;
         break;
       case 4:
-        dm2Rate = 1080.0;
-        setupFee = 5500.0;
+        baseBoardDm2 = 650.0;
         break;
       case 6:
-        dm2Rate = 1650.0;
-        setupFee = 8500.0;
+        baseBoardDm2 = 850.0;
         break;
       case 8:
-        dm2Rate = 2300.0;
-        setupFee = 12000.0;
+        baseBoardDm2 = 1090.0;
+        break;
+      case 10:
+        baseBoardDm2 = 1395.0;
+        break;
+      case 12:
+        baseBoardDm2 = 1665.0;
+        break;
+      case 14:
+        baseBoardDm2 = 1958.0;
+        break;
+      case 16:
+        baseBoardDm2 = 2213.0;
         break;
       default:
-        dm2Rate = 3100.0 + (layers - 10) * 350.0;
-        setupFee = 16000.0;
+        baseBoardDm2 = 2513.0 + (layers - 18) * 150.0;
         break;
     }
 
-    if (material == 'FR4 Tg170') dm2Rate *= 1.15;
-    if (material == 'Алюминий') dm2Rate *= 1.35;
-    if (material == 'Rogers') dm2Rate *= 2.80;
-    if (hasCustomStack && layers >= 4) dm2Rate *= 1.10;
+    if (material == 'Алюминий') {
+      baseBoardDm2 = 465.0;
+    } else if (material == 'FR4 Tg170') {
+      baseBoardDm2 += 27.0 * layers; // +27 р/дм² за слой HTg
+    } else if (material == 'Rogers') {
+      baseBoardDm2 *= 2.50;
+    }
+
+    // Фиксированные доплаты за дм² по прайсу 2026
+    double dm2Addons = 0.0;
+    if (maskSide == 'С двух сторон') {
+      dm2Addons += 49.0;
+    } else if (maskSide == 'С одной стороны') {
+      dm2Addons += 25.0;
+    }
+
+    if (silkSide == 'С двух сторон') {
+      dm2Addons += 40.0;
+    } else if (silkSide == 'С одной стороны') {
+      dm2Addons += 20.0;
+    }
 
     final foilInt = int.tryParse(foil) ?? 18;
-    if (foilInt >= 70) {
-      dm2Rate *= 1.30;
-    } else if (foilInt >= 35) {
-      dm2Rate *= 1.12;
+    if (foilInt >= 105) {
+      dm2Addons += 70.0;
+    } else if (foilInt >= 70) {
+      dm2Addons += 48.0;
+    } else if (foilInt >= 50) {
+      dm2Addons += 30.0;
     }
 
     if (finish == 'Иммерсионное золото') {
-      dm2Rate *= 1.35;
+      dm2Addons += 75.0;
     } else if (finish == 'Иммерсионное олово') {
-      dm2Rate *= 1.15;
+      dm2Addons += 55.0;
     }
 
+    final notesLow = notesText.toLowerCase();
+    final hasViaMaskPlug = notesLow.contains('забивк') || notesLow.contains('via plugging');
+    final hasEpoxyFill = notesLow.contains('смолой') || notesLow.contains('компаунд') || notesLow.contains('ipc 4761');
+    final hasBlindVias = notesLow.contains('слеп') || notesLow.contains('глух');
+    final hasImpedanceOrPair = notesLow.contains('импеданс') || notesLow.contains('попарн') || notesLow.contains('прессован');
+
+    if (hasViaMaskPlug) {
+      dm2Addons += 49.0;
+    }
+
+    // Коэффициенты прайса 2026 (берётся один наибольший коэффициент!)
+    double maxCoeff = 1.0;
     if (maskColor != 'Зеленая' && maskSide != 'Без маски') {
-      dm2Rate *= 1.08;
+      maxCoeff = math.max(maxCoeff, 2.0); // Белая/черная/синяя/красная LPI маска = 2.0
+    }
+    if (hasEpoxyFill) {
+      maxCoeff = math.max(maxCoeff, 1.5); // Заполнение эпоксидным компаундом = 1.5
+    }
+    if (hasBlindVias) {
+      maxCoeff = math.max(maxCoeff, 1.4); // Слепые переходные = 1.4
+    }
+    if ((minTrackMm > 0 && minTrackMm < 0.125) || (minDrillMm > 0 && minDrillMm < 0.30)) {
+      maxCoeff = math.max(maxCoeff, 1.25); // Повышенная сложность = 1.25
+    }
+    if (hasImpedanceOrPair) {
+      maxCoeff = math.max(maxCoeff, 1.2); // Импеданс / попарное прессование = 1.2
+    }
+    if (widthMm > 0 && heightMm > 0 && ((widthMm * heightMm) / 10000.0) > 5.0) {
+      maxCoeff = math.max(maxCoeff, 1.2); // Плата более 5 кв.дм = 1.2
     }
 
-    if (orderType == 'Повтор') {
-      setupFee = 0.0;
+    double dm2Rate = (baseBoardDm2 + dm2Addons) * maxCoeff;
+
+    // Подготовка к производству по прайсу 2026:
+    // 300р за каждый слой меди + 300р за каждую сторону маски + 600р маркировка
+    double setupFee = 0.0;
+    if (orderType != 'Повтор') {
+      int maskLayers = maskSide == 'С двух сторон' ? 2 : (maskSide == 'С одной стороны' ? 1 : 0);
+      setupFee = (layers + maskLayers) * 300.0;
+      if (silkSide != 'Без маркировки') {
+        setupFee += 600.0;
+      }
+      if (hasViaMaskPlug) {
+        setupFee += 500.0;
+      }
+      if ((minTrackMm > 0 && minTrackMm < 0.125) ||
+          (minDrillMm > 0 && minDrillMm < 0.30) ||
+          hasImpedanceOrPair ||
+          hasEpoxyFill) {
+        setupFee *= 1.50; // +50% к подготовке по прайсу 2026
+      }
     }
 
+    // Срочность (по таблице стр. 1 прайса: Ускоренный +50%, Суперэкспресс +100%)
     if (urgency == 'Экспресс') {
-      dm2Rate *= 1.538;
+      dm2Rate *= 1.50;
     } else if (urgency == 'СуперЭкспресс') {
       dm2Rate *= 2.00;
     }
@@ -287,7 +366,6 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   }
 
   bool _hasCustomStackOrPressing(String notesText, int layers) {
-    if (layers < 4) return false;
     final low = notesText.toLowerCase();
     return low.contains('попарн') ||
         low.contains('прессован') ||
@@ -295,11 +373,18 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         low.contains('между слоями') ||
         low.contains('импеданс') ||
         low.contains('ipc 4761') ||
-        low.contains('смолой');
+        low.contains('смолой') ||
+        low.contains('глух') ||
+        low.contains('слеп');
   }
 
   void _recalculateTariffFromSpecs({bool force = false}) {
     if (_manualPriceOverride && !force) return;
+
+    final w = double.tryParse(_widthController.text.replaceAll(',', '.')) ?? 0;
+    final h = double.tryParse(_heightController.text.replaceAll(',', '.')) ?? 0;
+    final tr = double.tryParse(_minTrackController.text.replaceAll(',', '.')) ?? 0.15;
+    final dr = double.tryParse(_minHoleController.text.replaceAll(',', '.')) ?? 0.30;
 
     final rates = _computeRatesForSpecs(
       layers: _layersCount,
@@ -308,9 +393,14 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       finish: _finish,
       maskColor: _maskColor,
       maskSide: _maskSide,
+      silkSide: _silkSide,
       orderType: _orderType,
       urgency: _urgency,
-      hasCustomStack: _hasCustomStackOrPressing(_notesController.text, _layersCount),
+      widthMm: w,
+      heightMm: h,
+      minTrackMm: tr,
+      minDrillMm: dr,
+      notesText: _notesController.text,
     );
 
     _basePriceDm2Controller.text = rates.dm2Rate.toStringAsFixed(1);
@@ -389,7 +479,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
   String _normalizeUrgency(String? raw) {
     final u = (raw ?? '').toLowerCase();
     if (u.contains('супер')) return 'СуперЭкспресс';
-    if (u.contains('экспресс') || u.contains('срочн')) return 'Экспресс';
+    if (u.contains('экспресс') || u.contains('ускорен') || u.contains('срочн')) return 'Экспресс';
     return 'Серийный';
   }
 
@@ -667,10 +757,10 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       r'        ne = [x for x in r if x]',
       r'        if len(ne) >= 7 and re.fullmatch(r"\d+(?:\.0)?", ne[0]) and "печатные платы" in ne[1].lower():',
       r'            b_name = ne[1].replace("Печатные платы", "").strip()',
-      r'            days = int(float(ne[2])) if re.match(r"^\d+", ne[2]) else 9',
+      r'            days = int(float(ne[2])) if re.match(r"^\d+", ne[2]) else 14',
       r'            qty = int(float(ne[5])) if re.match(r"^\d+", ne[5]) else 10',
       r'            sum_vat = float(ne[-1].replace(",", ".")) if re.match(r"^\d", ne[-1]) else 0.0',
-      r'            urg = "СуперЭкспресс" if days <= 3 else ("Экспресс" if days <= 7 else "Серийный")',
+      r'            urg = "СуперЭкспресс" if days <= 4 else ("Экспресс" if days <= 8 else "Серийный")',
       r'            b = {"customer": customer, "board_name": f"{b_name} ({days} дн.)", "qty": qty, "urgency": urg, "kp_price_with_vat": sum_vat, "kp_days": days, "notes": []}',
       r'            if idx + 1 < len(rows):',
       r'                spec = " ".join(x for x in rows[idx + 1] if x)',
@@ -681,9 +771,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       r'                if m_sz:',
       r'                    b["width"] = float(m_sz.group(1).replace(",", "."))',
       r'                    b["height"] = float(m_sz.group(2).replace(",", "."))',
-      r'                m_th = re.search(r"-(\d+(?:[.,]\d+)?)мм-", spec)',
+      r'                m_th = re.search(r"-(\d+(?:[.,]\d+)?)\s*мм-", spec)',
       r'                if m_th: b["thickness"] = m_th.group(1).replace(",", ".")',
-      r'                m_fl = re.search(r"-(\d+)мкм", spec)',
+      r'                m_fl = re.search(r"-(\d+)\s*мкм", spec)',
       r'                if m_fl: b["foil"] = m_fl.group(1)',
       r'                if "tg170" in spec.lower(): b["material"] = "FR4 Tg170"',
       r'                elif "rogers" in spec.lower(): b["material"] = "Rogers"',
@@ -718,7 +808,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       r'        ne = [x for x in row if x]',
       r'        if not ne: continue',
       r'        rj = " ".join(ne).lower()',
-      r'        if "tg170" in rj or "tg 170" in rj: global_material = "FR4 Tg170"',
+      r'        if "tg170" in rj or "tg 170" in rj or "htg" in rj: global_material = "FR4 Tg170"',
       r'        elif "rogers" in rj: global_material = "Rogers"',
       r'        elif "алюмин" in rj: global_material = "Алюминий"',
       r'        if "полуотверст" in rj: global_notes.append("Металлизированные полуотверстия")',
@@ -728,8 +818,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       r'        if "фаска" in rj:',
       r'            for x in ne:',
       r'                if "фаска" in x.lower(): global_notes.append(x)',
-      r'        if "иное:" in rj or rj.startswith("иное") or "дополнительные требован" in rj or "особые требован" in rj:',
-      r'            extra = [x for x in ne if not re.match(r"^(иное|примечан|особые|дополнительные)", x.lower())]',
+      r'        if "иное:" in rj or "иные требован" in rj or rj.startswith("иное") or "дополнительные требован" in rj or "особые требован" in rj:',
+      r'            extra = [x for x in ne if not re.match(r"^(иное|иные|примечан|особые|дополнительные)", x.lower())]',
       r'            if extra:',
       r'                global_notes.append("Требование: " + " ".join(extra))',
       r'            elif r_i + 1 < len(rows):',
@@ -766,6 +856,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       r'            elif "количество плат" in lbl or "тираж" in lbl:',
       r'                m = re.search(r"(\d+)", val)',
       r'                if m: b["qty"] = int(m.group(1))',
+      r'            elif "формат поставки" in lbl and val.lower() not in ("нет", "-", ""):',
+      r'                b["notes"].append("Формат поставки: " + val)',
       r'            elif "размер единичной платы" in lbl or "размеры платы" in lbl or "точные размеры" in lbl or "габарит" in lbl:',
       r'                if len(vals) >= 4 and vals[0].upper() == "X" and vals[2].upper() == "Y":',
       r'                    b["width"] = float(vals[1].replace(",", "."))',
@@ -778,6 +870,12 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       r'            elif "количество слоев" in lbl or "количество слоёв" in lbl or "слойност" in lbl:',
       r'                m = re.search(r"(\d+)", val)',
       r'                if m: b["layers"] = int(m.group(1))',
+      r'            elif "материал основания" in lbl:',
+      r'                vl = val.lower()',
+      r'                if "tg170" in vl or "htg" in vl: b["material"] = "FR4 Tg170"',
+      r'                elif "rogers" in vl: b["material"] = "Rogers"',
+      r'                elif "алюмин" in vl: b["material"] = "Алюминий"',
+      r'                else: b["material"] = "FR4"',
       r'            elif "толщина платы" in lbl or "толщина готовой платы" in lbl or "толщина стеклотекстолита" in lbl:',
       r'                m = re.search(r"(\d+(?:[.,]\d+)?)", val)',
       r'                if m: b["thickness"] = m.group(1).replace(",", ".")',
@@ -790,7 +888,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       r'                for j in range(len(vals) - 1):',
       r'                    if "цвет" in vals[j].lower(): b["mask_color"] = vals[j + 1]',
       r'            elif "маркировка" in lbl or "шелкограф" in lbl: b["silk_side"] = val',
-      r'            elif "покрыт" in lbl and "ножев" not in lbl and "концев" not in lbl and "ламель" not in lbl and "разъем" not in lbl and "разъём" not in lbl:',
+      r'            elif ("финишное покрытие" in lbl or "покрыт" in lbl) and "ножев" not in lbl and "концев" not in lbl and "ламель" not in lbl and "разъем" not in lbl and "разъём" not in lbl:',
       r'                v_low = val.lower()',
       r'                if "иммерс" in v_low or "золот" in v_low or "enig" in v_low:',
       r'                    b["finish"] = "Иммерсионное золото"',
@@ -802,10 +900,12 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       r'                    b["finish"] = "HAL (ПОС-63)"',
       r'            elif ("ножевых" in lbl or "концев" in lbl or "ламель" in lbl) and val.lower() not in ("нет", "-", "0", "", "отсутствует", "отсутствуют"):',
       r'                b["notes"].append("Разъёмы/ламели: " + val)',
-      r'            elif "вариант мпп" in lbl and val.lower() not in ("нет", "-", "", "отсутствует"):',
+      r'            elif "вариант мпп" in lbl and val.lower() not in ("нет", "-", "", "отсутствует", "любой"):',
       r'                b["notes"].append("Вариант МПП: " + val)',
       r'            elif ("переходные отверстия" in lbl or "забиванию отверстий" in lbl) and val.lower() not in ("нет", "-", ""):',
       r'                b["notes"].append("Переходные отверстия: " + val)',
+      r'            elif "файл сверловки" in lbl and val.lower() not in ("нет", "-", ""):',
+      r'                b["notes"].append("Сверловка: " + val)',
       r'            elif "электроконтрол" in lbl or "электротест" in lbl: b["electro_test"] = ("нет" not in val.lower())',
       r'            elif "обработки контура" in lbl or "контур" in lbl: b["contour"] = val.lower()',
       r'    for b in boards:',
@@ -1341,7 +1441,6 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       detectedWidth ??= fallbackCopperWidth;
       detectedHeight ??= fallbackCopperHeight;
 
-      // Парсим ВСЕ найденные бланки Excel и PDF в архиве (а не только один!)
       final List parsedBoards = [];
       final docsToParse = foundExcelPaths.isNotEmpty ? foundExcelPaths : foundPdfPaths;
       for (final docP in docsToParse) {
@@ -1545,7 +1644,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
 
     if (_hasCustomStackOrPressing(_notesController.text, _layersCount)) {
       final pairMatch = RegExp(r'(\d+[.,]\d+)\s*[xхXХ*]\s*2').firstMatch(notesLow);
-      String stackDetail = 'Требуется согласование с технологом (заполнение отверстий смолой / IPC 4761 / симметрия МПП).';
+      String stackDetail = 'По прайсу 2026: заполнение отверстий смолой / слепые / глухие / импеданс требуют спец. техпроцесса (коэф. 1.2–1.5).';
       if (pairMatch != null) {
         final coreMm = double.tryParse(pairMatch.group(1)!.replaceAll(',', '.')) ?? 0;
         if (coreMm > 0) {
@@ -1557,7 +1656,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         }
       }
       checks.add(DfmCheckItem(
-        title: 'Спец. техпроцесс / стек МПП',
+        title: 'Спец. техпроцесс / стек МПП (повышенный коэф.)',
         detail: stackDetail,
         level: 'warn',
       ));
@@ -1586,11 +1685,19 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         level: 'warn',
       ));
     } else if (w > 0 && h > 0) {
-      checks.add(DfmCheckItem(
-        title: 'Габариты платы в норме (${w.toStringAsFixed(1)}×${h.toStringAsFixed(1)} мм)',
-        detail: 'Укладываются в стандартное рабочее поле (до 450×350 мм).',
-        level: 'ok',
-      ));
+      if (w < 25.0 || h < 25.0 || (w * h) < 625.0) {
+        checks.add(DfmCheckItem(
+          title: 'Мелкая плата (${w.toStringAsFixed(1)}×${h.toStringAsFixed(1)} мм < 25×25 мм)',
+          detail: 'По тех. требованиям завода платы менее 25×25 мм (625 мм²) отдаются только в групповом блоке (шаг 2.3 мм при фрезеровке или скрайб).',
+          level: 'warn',
+        ));
+      } else {
+        checks.add(DfmCheckItem(
+          title: 'Габариты платы в норме (${w.toStringAsFixed(1)}×${h.toStringAsFixed(1)} мм)',
+          detail: 'Укладываются в стандартное рабочее поле (до 450×350 мм).',
+          level: 'ok',
+        ));
+      }
     } else {
       checks.add(DfmCheckItem(
         title: 'Не заданы габариты платы (X × Y = 0)',
@@ -1613,8 +1720,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         ));
       } else if (track < stdT) {
         checks.add(DfmCheckItem(
-          title: 'Дорожка $track мм попадает в «Предел»',
-          detail: 'Для фольги $_foil мкм стандарт ≥ $stdT мм (повышенный класс точности).',
+          title: 'Дорожка $track мм попадает в «Предел» (коэф. 1.25)',
+          detail: 'Для фольги $_foil мкм стандарт ≥ $stdT мм; при ширине < 0.125 мм применяется коэф. 1.25 и +50% к подготовке.',
           level: 'warn',
         ));
       } else {
@@ -1637,7 +1744,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       } else if (drill < 0.30 || aspect > 2.5) {
         checks.add(DfmCheckItem(
           title: 'Сверловка Ø $drill мм (соотношение ${aspect.toStringAsFixed(1)}:1) — зона «Предел»',
-          detail: 'Стандарт: Ø ≥ 0.30 мм и отношение толщины платы к диаметру ≤ 2.5.',
+          detail: 'Стандарт: Ø ≥ 0.30 мм и отношение толщины платы к диаметру ≤ 2.5 (при < 0.30 мм коэф. 1.25).',
           level: 'warn',
         ));
       } else {
@@ -1657,10 +1764,18 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       ));
     }
 
+    if (thick < 0.5 && _electroTest) {
+      checks.add(DfmCheckItem(
+        title: 'Толщина $thick мм < 0.5 мм: эл. тест Flying Probe не проводится!',
+        detail: 'По требованиям завода платы тоньше 0.5 мм проверяются только оптическим тестером (AOI).',
+        level: 'warn',
+      ));
+    }
+
     if (_maskColor != 'Зеленая' && _maskSide != 'Без маски') {
       checks.add(DfmCheckItem(
-        title: 'Цветная маска ($_maskColor): проверь переходные отверстия',
-        detail: 'По регламенту завода для цветной маски отверстия ≤ 0.4 мм рекомендуется закрывать маской.',
+        title: 'Цветная маска ($_maskColor): коэф. 2.0 и перемычка ≥ 150 мкм',
+        detail: 'По прайсу 2026 цветная LPI маска имеет коэф. 2.0; минимальная ширина перемычки маски 0.15 мм.',
         level: 'warn',
       ));
     }
@@ -1691,7 +1806,6 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         'маска: $maskPart; маркировка: $silkPart; $_finish; $testPart$stackTag';
   }
 
-  /// Форматирует число с пробелом тысяч и запятой (как в официальном КП № 2054: "3 192,70")
   String _fmtRuMoney(double val) {
     final fixed = val.toStringAsFixed(2);
     final parts = fixed.split('.');
@@ -1745,6 +1859,10 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         final silkSide = b['silk_side']?.toString() ?? 'С двух сторон';
         final contour = b['contour']?.toString() ?? 'фрезеровка';
         final eTest = b['electro_test'] != false;
+        final notesStr = (b['notes'] is List) ? (b['notes'] as List).join('; ') : '';
+
+        final effW = w > 0 ? w : 50.0;
+        final effH = h > 0 ? h : 50.0;
 
         final rates = _computeRatesForSpecs(
           layers: layers,
@@ -1753,19 +1871,33 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
           finish: fin,
           maskColor: maskColor,
           maskSide: maskSide,
+          silkSide: silkSide,
           orderType: oType,
           urgency: urg,
+          widthMm: effW,
+          heightMm: effH,
+          notesText: notesStr,
         );
 
-        final effW = w > 0 ? w : 50.0;
-        final effH = h > 0 ? h : 50.0;
         final singleDm2 = _calcEffectiveSingleDm2(effW, effH);
         final totalDm2 = singleDm2 * math.max(qty, 1);
         final pureSum = (totalDm2 * rates.dm2Rate) + rates.setupFee;
         final unitPriceNoVat = pureSum / math.max(qty, 1);
         final vatSum = pureSum * 0.22;
         final totalWithVat = pureSum + vatSum;
-        final leadDays = urg == 'СуперЭкспресс' ? 4 : (urg == 'Экспресс' ? 6 : 14);
+
+        // Официальные сроки завода по прайсу от 25.09.2026:
+        // Стандарт: 14 раб. дн. (1-2 сл) / 20 раб. дн. (МПП)
+        // Ускоренный: 7 раб. дн. (1-2 сл) / 12 раб. дн. (МПП)
+        // Суперэкспресс: 3 раб. дн. (1-2 сл) / 6 раб. дн. (МПП)
+        final int leadDays;
+        if (urg == 'СуперЭкспресс') {
+          leadDays = layers >= 4 ? 6 : 3;
+        } else if (urg == 'Экспресс') {
+          leadDays = layers >= 4 ? 12 : 7;
+        } else {
+          leadDays = layers >= 4 ? 20 : 14;
+        }
 
         final spec = '$oType; $layers сл; ${effW.toStringAsFixed(0)}х${effH.toStringAsFixed(0)} мм; $contour; '
             '$mat-${thick} мм-${foil} мкм; маска: $maskSide $maskColor; маркировка: $silkSide Белая; '
@@ -1792,13 +1924,21 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       final effH = h > 0 ? h : 50.0;
       final singleDm2 = _calcEffectiveSingleDm2(effW, effH);
       final totalDm2 = singleDm2 * math.max(qty, 1);
-      final baseP = double.tryParse(_basePriceDm2Controller.text.replaceAll(',', '.')) ?? 466.0;
-      final setupP = double.tryParse(_setupFeeController.text.replaceAll(',', '.')) ?? 2406.0;
+      final baseP = double.tryParse(_basePriceDm2Controller.text.replaceAll(',', '.')) ?? 439.0;
+      final setupP = double.tryParse(_setupFeeController.text.replaceAll(',', '.')) ?? 1800.0;
       final pureSum = (totalDm2 * baseP) + setupP;
       final unitPriceNoVat = pureSum / math.max(qty, 1);
       final vatSum = pureSum * 0.22;
       final totalWithVat = pureSum + vatSum;
-      final leadDays = _urgency == 'СуперЭкспресс' ? 4 : (_urgency == 'Экспресс' ? 6 : 14);
+
+      final int leadDays;
+      if (_urgency == 'СуперЭкспресс') {
+        leadDays = _layersCount >= 4 ? 6 : 3;
+      } else if (_urgency == 'Экспресс') {
+        leadDays = _layersCount >= 4 ? 12 : 7;
+      } else {
+        leadDays = _layersCount >= 4 ? 20 : 14;
+      }
 
       itemsToRender.add({
         'idx': 1,
@@ -2083,8 +2223,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     final singleDm2 = _calcEffectiveSingleDm2(w, h);
     final totalDm2 = singleDm2 * math.max(qty, 1);
 
-    final baseP = double.tryParse(_basePriceDm2Controller.text.replaceAll(',', '.')) ?? 466.0;
-    final setupP = double.tryParse(_setupFeeController.text.replaceAll(',', '.')) ?? 2406.0;
+    final baseP = double.tryParse(_basePriceDm2Controller.text.replaceAll(',', '.')) ?? 439.0;
+    final setupP = double.tryParse(_setupFeeController.text.replaceAll(',', '.')) ?? 1800.0;
     final pureSum = (totalDm2 * baseP) + setupP;
     final vatSum = pureSum * 0.22;
     final totalSumWithVat = pureSum + vatSum;
@@ -2218,7 +2358,6 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       }
 
       final notesStr = (b['notes'] is List) ? (b['notes'] as List).join('; ') : '';
-      final hasCustom = _hasCustomStackOrPressing(notesStr, layers);
 
       final rates = _computeRatesForSpecs(
         layers: layers,
@@ -2227,9 +2366,12 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         finish: fin,
         maskColor: 'Зеленая',
         maskSide: maskSide,
+        silkSide: silkSide,
         orderType: oType,
         urgency: urg,
-        hasCustomStack: hasCustom,
+        widthMm: w,
+        heightMm: h,
+        notesText: notesStr,
       );
 
       final singleDm2 = _calcEffectiveSingleDm2(w, h);
@@ -2361,8 +2503,8 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     final singleAreaDm2 = _calcEffectiveSingleDm2(w, h);
     final totalAreaDm2 = singleAreaDm2 * math.max(qty, 1);
 
-    final baseP = double.tryParse(_basePriceDm2Controller.text.replaceAll(',', '.')) ?? 466.0;
-    final setupP = double.tryParse(_setupFeeController.text.replaceAll(',', '.')) ?? 2406.0;
+    final baseP = double.tryParse(_basePriceDm2Controller.text.replaceAll(',', '.')) ?? 439.0;
+    final setupP = double.tryParse(_setupFeeController.text.replaceAll(',', '.')) ?? 1800.0;
     final pureSum = hasValidDimensions ? ((totalAreaDm2 * baseP) + setupP) : 0.0;
     final vatSum = pureSum * 0.22;
     final totalSumWithVat = pureSum + vatSum;
@@ -2389,7 +2531,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text('ЭЛЕКТРОконнект — CAM & DFM Контроль (Кувезенков А.А.)', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-                Text('Автопарсинг бланков, КП, PDF ТКП, Gerber, RAR, ZIP • Генерация КП завода', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                Text('Прайс от 25.09.2026 • Автопарсинг бланков v21.01, КП, PDF ТКП, Gerber • Генерация КП', style: TextStyle(fontSize: 11, color: Colors.grey)),
               ],
             ),
           ],
@@ -2561,9 +2703,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                             const SizedBox(height: 12),
                             Row(
                               children: [
-                                Expanded(child: _inputField(controller: _widthController, label: 'Длина X, мм', keyboardType: TextInputType.number)),
+                                Expanded(child: _inputField(controller: _widthController, label: 'Длина X, мм', keyboardType: TextInputType.number, triggerRecalc: true)),
                                 const SizedBox(width: 10),
-                                Expanded(child: _inputField(controller: _heightController, label: 'Ширина Y, мм', keyboardType: TextInputType.number)),
+                                Expanded(child: _inputField(controller: _heightController, label: 'Ширина Y, мм', keyboardType: TextInputType.number, triggerRecalc: true)),
                                 const SizedBox(width: 10),
                                 Expanded(child: _inputField(controller: _basePriceDm2Controller, label: 'Цена за 1 дм², руб.', keyboardType: TextInputType.number, isPriceField: true)),
                                 const SizedBox(width: 10),
@@ -2593,7 +2735,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                                     children: [
                                       Text(
-                                        hasValidDimensions ? 'Локальный расчёт ($_urgency) с НДС 22%:' : 'Укажите длину X и ширину Y для расчёта цены:',
+                                        hasValidDimensions ? 'Расчёт по прайсу 2026 ($_urgency) с НДС 22%:' : 'Укажите длину X и ширину Y для расчёта цены:',
                                         style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: _subtleText),
                                       ),
                                       Text(
@@ -2634,7 +2776,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                                   child: _dropdownField(
                                     label: 'Слои',
                                     value: '$_layersCount',
-                                    items: const ['1', '2', '4', '6', '8', '10', '12', '16'],
+                                    items: const ['1', '2', '4', '6', '8', '10', '12', '14', '16', '18'],
                                     onChanged: (v) => setState(() {
                                       _layersCount = int.parse(v.toString());
                                       _recalculateTariffFromSpecs();
@@ -2712,7 +2854,17 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                             const SizedBox(height: 12),
                             Row(
                               children: [
-                                Expanded(child: _dropdownField(label: 'Маркировка', value: _silkSide, items: const ['С двух сторон', 'С одной стороны', 'Без маркировки'], onChanged: (v) => setState(() => _silkSide = v.toString()))),
+                                Expanded(
+                                  child: _dropdownField(
+                                    label: 'Маркировка',
+                                    value: _silkSide,
+                                    items: const ['С двух сторон', 'С одной стороны', 'Без маркировки'],
+                                    onChanged: (v) => setState(() {
+                                      _silkSide = v.toString();
+                                      _recalculateTariffFromSpecs();
+                                    }),
+                                  ),
+                                ),
                                 const SizedBox(width: 10),
                                 Expanded(child: _dropdownField(label: 'Цвет марк.', value: _silkColor, items: const ['Белая', 'Черная'], onChanged: (v) => setState(() => _silkColor = v.toString()))),
                                 const SizedBox(width: 10),
@@ -2722,9 +2874,9 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                             const SizedBox(height: 12),
                             Row(
                               children: [
-                                Expanded(child: _inputField(controller: _minTrackController, label: 'Мин. дорожка, мм', keyboardType: TextInputType.number)),
+                                Expanded(child: _inputField(controller: _minTrackController, label: 'Мин. дорожка, мм', keyboardType: TextInputType.number, triggerRecalc: true)),
                                 const SizedBox(width: 10),
-                                Expanded(child: _inputField(controller: _minHoleController, label: 'Мин. сверло, мм', keyboardType: TextInputType.number)),
+                                Expanded(child: _inputField(controller: _minHoleController, label: 'Мин. сверло, мм', keyboardType: TextInputType.number, triggerRecalc: true)),
                                 const SizedBox(width: 10),
                                 Expanded(
                                   child: CheckboxListTile(
