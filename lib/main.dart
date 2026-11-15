@@ -548,12 +548,11 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         _maskSide = 'С двух сторон';
       } else if (ms.contains('низ') || ms.contains('bot')) {
         _maskSide = 'С одной стороны (низ)';
-      } else if (ms.contains('одной') || ms.contains('верх') || ms.contains('top') || ms.contains('1')) {
+      } else if (ms.contains('одной') || ms.contains('верх') || ms.contains('top') || ms.contains('1') || ms.contains('только верх')) {
         _maskSide = 'С одной стороны (верх)';
       } else if (ms.contains('без') || ms.contains('нет')) {
         _maskSide = 'Без маски';
       }
-      // Извлекаем цвет маски прямо из этой же ячейки, если указан ("Белая маска Только верх")
       _maskColor = _parseColorFromText(rawMs, _maskColor);
     }
     if (board['mask_color'] != null) {
@@ -566,12 +565,11 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
         _silkSide = 'С двух сторон';
       } else if (ss.contains('низ') || ss.contains('bot')) {
         _silkSide = 'С одной стороны (низ)';
-      } else if (ss.contains('одной') || ss.contains('верх') || ss.contains('top') || ss.contains('1')) {
+      } else if (ss.contains('одной') || ss.contains('верх') || ss.contains('top') || ss.contains('1') || ss.contains('только верх')) {
         _silkSide = 'С одной стороны (верх)';
       } else if (ss.contains('без') || ss.contains('нет')) {
         _silkSide = 'Без маркировки';
       }
-      // Извлекаем цвет маркировки прямо из этой же ячейки ("Черная Только верх")
       _silkColor = _parseColorFromText(rawSs, _silkColor);
     }
     if (board['silk_color'] != null) {
@@ -937,7 +935,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       if (outJson.existsSync()) outJson.deleteSync();
 
       final ext = docPath.split('.').last.toLowerCase();
-      final cleanDocPath = '${tempDir.path}\\clean_doc_${DateTime.now().microsecondsSinceEpoch}.$ext';
+      final cleanDocPath = '${tempDir.path}\\clean_doc_${DateTime.now().millisecondsSinceEpoch}.$ext';
       await File(docPath).copy(cleanDocPath);
 
       await pyFile.writeAsString(_buildDocParserPythonCode(), encoding: utf8);
@@ -1261,7 +1259,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
             }
           } else if (low.endsWith('.rar') || low.endsWith('.7z')) {
             final tempRarPath = await _saveTempBytes(sessionUnpackDir, 'nested_$rawName', fileBytes);
-            final nestedOutDir = Directory('${sessionUnpackDir.path}${Platform.pathSeparator}unpacked_${DateTime.now().microsecondsSinceEpoch}');
+            final nestedOutDir = Directory('${sessionUnpackDir.path}${Platform.pathSeparator}unpacked_${DateTime.now().millisecondsSinceEpoch}');
             final ok = await _extractExternalArchiveToDir(tempRarPath, nestedOutDir);
             if (ok && nestedOutDir.existsSync()) {
               for (final entity in nestedOutDir.listSync(recursive: true)) {
@@ -1809,21 +1807,6 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     return '$_orderType ($_urgency); $_layersCount сл; ${w}х${h}мм; $_contour; '
         '$_material-${_thickness}мм-${_foil}мкм; '
         'маска: $maskPart; маркировка: $silkPart; $_finish; $testPart$stackTag';
-  }
-
-  String _fmtRuMoney(double val) {
-    final fixed = val.toStringAsFixed(2);
-    final parts = fixed.split('.');
-    final intPart = parts[0];
-    final decPart = parts[1];
-    final buf = StringBuffer();
-    for (int i = 0; i < intPart.length; i++) {
-      if (i > 0 && (intPart.length - i) % 3 == 0) {
-        buf.write(' ');
-      }
-      buf.write(intPart[i]);
-    }
-    return '${buf.toString()},$decPart';
   }
 
   Future<void> _generateOfficialKpDocument({bool saveAsPdf = false}) async {
@@ -3080,7 +3063,7 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
                               padding: const EdgeInsets.all(18),
                               decoration: BoxDecoration(color: _cardBg, borderRadius: BorderRadius.circular(16), border: Border.all(color: _borderCol)),
                               child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
+                                CrossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Row(
                                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
