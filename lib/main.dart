@@ -70,11 +70,15 @@ class GerberLayerInfo {
   final String fileName;
   final String role;
   final int sizeBytes;
+  final String? extractedPath;
+  final bool isImportantDoc;
 
   GerberLayerInfo({
     required this.fileName,
     required this.role,
     required this.sizeBytes,
+    this.extractedPath,
+    this.isImportantDoc = false,
   });
 }
 
@@ -89,6 +93,7 @@ class GerberAnalysisResult {
   final bool hasTopSilk;
   final bool hasBottomSilk;
   final bool hasBinaryBrdOnly;
+  final bool hasCadSourceOnly;
   final bool hasNestedArchive;
   final double? widthMm;
   final double? heightMm;
@@ -108,6 +113,7 @@ class GerberAnalysisResult {
     required this.hasTopSilk,
     required this.hasBottomSilk,
     required this.hasBinaryBrdOnly,
+    required this.hasCadSourceOnly,
     required this.hasNestedArchive,
     this.widthMm,
     this.heightMm,
@@ -290,7 +296,14 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
     });
   }
 
-  /// Попытка распаковать .rar / .7z во временную папку через WinRAR или 7-Zip на Windows
+  Future<void> _openExtractedFile(String? path, String fileName) async {
+    if (path == null || !File(path).existsSync()) {
+      _showSnack('Файл $fileName недоступен для открытия.');
+      return;
+    }
+    await OpenFilex.open(path);
+  }
+
   Future<bool> _extractExternalArchiveToDir(String archivePath, Directory targetDir) async {
     if (!Platform.isWindows) return false;
     if (!targetDir.existsSync()) targetDir.createSync(recursive: true);
@@ -319,7 +332,6 @@ class _CamWorkspaceScreenState extends State<CamWorkspaceScreen> {
       }
     }
 
-    // Пробуем системную команду tar (в Windows 10/11 умеет распаковывать некоторые архивы)
     try {
       final res = await Process.run('tar', ['-xf', archivePath, '-C', targetDir.path]);
       if (res.exitCode == 0) return true;
@@ -420,7 +432,6 @@ def click_in_context(ctx, variants):
     return False
 
 def extract_prices_from_text(text):
-    # Ищем любые суммы рядом с руб / ₽ или после слов Итого / Стоимость / Цена
     found = []
     for pat in [
         r"(?:итого|стоимость|сумма|всего|цена)[^\\d\\n]{0,40}(\\d[\\d\\s]{1,12}(?:[.,]\\d{1,2})?)",
@@ -484,7 +495,6 @@ def main():
 
             prices = extract_prices_from_text(all_text)
             if prices:
-                # Берём максимальную из найденных итоговых сумм заказа (обычно итог с НДС больше единичных ставок)
                 prices.sort(key=lambda x: x[0])
                 best_val, best_str = prices[-1]
                 res["ok"] = True
@@ -557,20 +567,29 @@ if __name__ == "__main__":
     final archiveDir = selectedFile.parent.path;
 
     try {
-      // Собираем список виртуальных файлов (имя + байты), включая распаковку вложенных .rar / .zip
-      final List<({String name, List<int> bytes})> projectFiles = [];
+      final tempRoot = await getTemporaryDirectory();
+      final sessionUnpackDir = Directory('${tempRoot.path}\\cam_session_${DateTime.now().millisecondsSinceEpoch}');
+      sessionUnpackDir.createSync(recursive: true);
+
+      final List<({String name, List<int> bytes, String savedPath})> projectFiles = [];
       bool hasUnpackedNestedArchive = false;
 
+      Future<void> registerFileBytes(String rawFileName, List<int> fileBytes) async {
+        final safeName = rawFileName.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+        final outFile = File('${sessionUnpackDir.path}\\$safeName');
+        await outFile.writeAsBytes(fileBytes);
+        projectFiles.add((name: rawFileName, bytes: fileBytes, savedPath: outFile.path));
+      }
+
       if (selectedFile.path.toLowerCase().endsWith('.rar')) {
-        final tempDir = await getTemporaryDirectory();
-        final unpackDir = Directory('${tempDir.path}\\cam_unpack_${DateTime.now().millisecondsSinceEpoch}');
-        final ok = await _extractExternalArchiveToDir(selectedFile.path, unpackDir);
-        if (ok && unpackDir.existsSync()) {
-          for (final entity in unpackDir.listSync(recursive: true)) {
+        final ok = await _extractExternalArchiveToDir(selectedFile.path, sessionUnpackDir);
+        if (ok && sessionUnpackDir.existsSync()) {
+          for (final entity in sessionUnpackDir.listSync(recursive: true)) {
             if (entity is File) {
               projectFiles.add((
                 name: entity.path.split(Platform.pathSeparator).last,
                 bytes: await entity.readAsBytes(),
+                savedPath: entity.path,
               ));
             }
           }
@@ -590,41 +609,39 @@ if __name__ == "__main__":
           final fileBytes = file.content as List<int>;
 
           if (low.endsWith('.zip')) {
-            // Вложенный .zip распаковываем прямо в памяти
             try {
               final innerArchive = ZipDecoder().decodeBytes(fileBytes);
               for (final inner in innerArchive.files) {
                 if (!inner.isFile) continue;
                 final innerName = inner.name.split('/').last.split('\\').last;
                 if (innerName.isNotEmpty) {
-                  projectFiles.add((name: innerName, bytes: inner.content as List<int>));
+                  await registerFileBytes(innerName, inner.content as List<int>);
                 }
               }
             } catch (_) {
-              projectFiles.add((name: rawName, bytes: fileBytes));
+              await registerFileBytes(rawName, fileBytes);
             }
           } else if (low.endsWith('.rar') || low.endsWith('.7z')) {
-            // Пробуем автоматически распаковать вложенный .rar через WinRAR / 7-Zip
-            final tempDir = await getTemporaryDirectory();
-            final tempRar = File('${tempDir.path}\\nested_${DateTime.now().millisecondsSinceEpoch}_$rawName');
+            final tempRar = File('${sessionUnpackDir.path}\\nested_$rawName');
             await tempRar.writeAsBytes(fileBytes);
-            final unpackDir = Directory('${tempDir.path}\\nested_out_${DateTime.now().millisecondsSinceEpoch}');
-            final ok = await _extractExternalArchiveToDir(tempRar.path, unpackDir);
-            if (ok && unpackDir.existsSync()) {
-              for (final entity in unpackDir.listSync(recursive: true)) {
+            final nestedOutDir = Directory('${sessionUnpackDir.path}\\unpacked_${DateTime.now().millisecondsSinceEpoch}');
+            final ok = await _extractExternalArchiveToDir(tempRar.path, nestedOutDir);
+            if (ok && nestedOutDir.existsSync()) {
+              for (final entity in nestedOutDir.listSync(recursive: true)) {
                 if (entity is File) {
                   projectFiles.add((
                     name: entity.path.split(Platform.pathSeparator).last,
                     bytes: await entity.readAsBytes(),
+                    savedPath: entity.path,
                   ));
                 }
               }
             } else {
               hasUnpackedNestedArchive = true;
-              projectFiles.add((name: rawName, bytes: fileBytes));
+              await registerFileBytes(rawName, fileBytes);
             }
           } else {
-            projectFiles.add((name: rawName, bytes: fileBytes));
+            await registerFileBytes(rawName, fileBytes);
           }
         }
       }
@@ -636,6 +653,7 @@ if __name__ == "__main__":
       bool hasTopSilk = false;
       bool hasBottomSilk = false;
       bool hasBinaryBrd = false;
+      bool hasCadSourceOnly = false;
       bool hasTextContour = false;
 
       double? detectedWidth;
@@ -651,9 +669,20 @@ if __name__ == "__main__":
         final rawName = pf.name;
         final upper = rawName.toUpperCase();
         String role = 'Прочий файл проекта';
+        bool importantDoc = false;
 
         if (upper.endsWith('.RAR') || upper.endsWith('.7Z')) {
           role = 'Нераспакованный RAR (установите WinRAR/7-Zip)';
+        } else if (upper.endsWith('.XLS') || upper.endsWith('.XLSX') || upper.endsWith('.CSV')) {
+          role = 'Бланк заказа / спецификация (Excel)';
+          importantDoc = true;
+        } else if (upper.endsWith('.PNG') || upper.endsWith('.JPG') || upper.endsWith('.JPEG') || upper.endsWith('.PDF')) {
+          role = 'Чертёж / стек слоёв / ламели (кликните для просмотра)';
+          importantDoc = true;
+        } else if (upper.endsWith('.PCB') || upper.endsWith('.PCBDOC') || upper.endsWith('.LAY') || upper.endsWith('.LAY6')) {
+          role = 'Исходник платы CAD (.PCB / .LAY)';
+          hasCadSourceOnly = true;
+          importantDoc = true;
         } else if (upper.endsWith('.TOP') ||
             upper.endsWith('.GTL') ||
             upper.endsWith('.CMP') ||
@@ -722,7 +751,13 @@ if __name__ == "__main__":
           hasBinaryBrd = true;
         }
 
-        layers.add(GerberLayerInfo(fileName: rawName, role: role, sizeBytes: pf.bytes.length));
+        layers.add(GerberLayerInfo(
+          fileName: rawName,
+          role: role,
+          sizeBytes: pf.bytes.length,
+          extractedPath: pf.savedPath,
+          isImportantDoc: importantDoc,
+        ));
 
         final isLikelyBinary = pf.bytes.take(200).where((b) => b == 0).length > 5;
         if (!isLikelyBinary) {
@@ -769,6 +804,7 @@ if __name__ == "__main__":
         hasTopSilk: hasTopSilk,
         hasBottomSilk: hasBottomSilk,
         hasBinaryBrdOnly: hasBinaryBrd && !hasTextContour && detectedWidth == null,
+        hasCadSourceOnly: hasCadSourceOnly && copperLayers == 0,
         hasNestedArchive: hasUnpackedNestedArchive,
         widthMm: detectedWidth,
         heightMm: detectedHeight,
@@ -809,6 +845,8 @@ if __name__ == "__main__":
 
       if (hasUnpackedNestedArchive) {
         _showSnack('Не удалось распаковать вложенный .RAR (не найден WinRAR/7-Zip) — укажите X и Y вручную.');
+      } else if (hasCadSourceOnly && detectedWidth == null) {
+        _showSnack('В архиве исходник .PCB без Gerber — кликните по .XLS или стеку справа, чтобы посмотреть размеры.');
       } else if (detectedWidth == null) {
         _showSnack('Архив загружен, но контур не распознан — введите X и Y вручную для расчёта цены.');
       } else {
@@ -945,7 +983,7 @@ if __name__ == "__main__":
     } else {
       checks.add(DfmCheckItem(
         title: 'Не заданы габариты платы (X × Y = 0)',
-        detail: 'Укажите длину X и ширину Y в мм слева для расчёта площади и цены.',
+        detail: 'Укажите длину X и ширину Y в мм слева (или откройте бланк .XLS / стек в блоке 3 ниже).',
         level: 'warn',
       ));
     }
@@ -1241,7 +1279,7 @@ $priceLine
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text('ЭЛЕКТРОконнект — CAM & DFM Контроль (Кувезенков А.А.)', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
-                Text('Анализ Gerber / RAR / ZIP • Проверка норм завода • Расчет цены и ТЗ', style: TextStyle(fontSize: 11, color: Colors.grey)),
+                Text('Анализ Gerber / RAR / ZIP / PCB • Проверка норм завода • Расчет цены и ТЗ', style: TextStyle(fontSize: 11, color: Colors.grey)),
               ],
             ),
           ],
@@ -1280,7 +1318,7 @@ $priceLine
                             Text(
                               _analysis != null
                                   ? 'Найдено файлов: ${_analysis!.layers.length} • Отверстий: ${_analysis!.totalHoles} • Папка: ${_analysis!.archiveDir}'
-                                  : 'Поддерживаются P-CAD (.TOP, .BOT, .TMS, .BMS, .DRL, .BRD) и стандартные Gerber (.GTL, .GBL, .GTS, .GBS, .GKO)',
+                                  : 'Поддерживаются P-CAD (.TOP, .BOT, .TMS, .BMS, .DRL, .BRD), исходники (.PCB) и стандартные Gerber',
                               style: TextStyle(fontSize: 12.5, color: _subtleText),
                             ),
                           ],
@@ -1622,6 +1660,20 @@ $priceLine
                                       style: TextStyle(fontSize: 12),
                                     ),
                                   ),
+                                if (_analysis?.hasCadSourceOnly == true)
+                                  Container(
+                                    margin: const EdgeInsets.only(bottom: 10),
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(
+                                      color: const Color(0xFF0284C7).withOpacity(0.14),
+                                      borderRadius: BorderRadius.circular(10),
+                                      border: Border.all(color: const Color(0xFF0284C7).withOpacity(0.45)),
+                                    ),
+                                    child: const Text(
+                                      'В архиве исходник платы (.PCB/.LAY) без Gerber-слоёв. Нажмите на бланк .XLS или чертёж стека в списке ниже, чтобы открыть их и посмотреть размеры X/Y.',
+                                      style: TextStyle(fontSize: 12),
+                                    ),
+                                  ),
                                 if (_analysis?.hasBinaryBrdOnly == true)
                                   Container(
                                     margin: const EdgeInsets.only(bottom: 10),
@@ -1677,17 +1729,45 @@ $priceLine
                               child: Column(
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
-                                  Text('3. Состав архива и сверловка (${_analysis!.totalHoles} отв.)', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                                  Row(
+                                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                                    children: [
+                                      Text('3. Состав архива (${_analysis!.totalHoles} отв.)', style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold)),
+                                      Text('Клик по файлу — открыть', style: TextStyle(fontSize: 11, color: _subtleText)),
+                                    ],
+                                  ),
                                   const SizedBox(height: 10),
-                                  ..._analysis!.layers.map((l) => Padding(
-                                        padding: const EdgeInsets.symmetric(vertical: 3),
-                                        child: Row(
-                                          children: [
-                                            const Icon(Icons.insert_drive_file_outlined, size: 15, color: accent),
-                                            const SizedBox(width: 6),
-                                            Expanded(child: Text(l.fileName, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600))),
-                                            Text(l.role, style: TextStyle(fontSize: 11, color: _subtleText)),
-                                          ],
+                                  ..._analysis!.layers.map((l) => InkWell(
+                                        borderRadius: BorderRadius.circular(8),
+                                        onTap: () => _openExtractedFile(l.extractedPath, l.fileName),
+                                        child: Container(
+                                          margin: const EdgeInsets.symmetric(vertical: 2),
+                                          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
+                                          decoration: BoxDecoration(
+                                            color: l.isImportantDoc ? accent.withOpacity(0.08) : Colors.transparent,
+                                            borderRadius: BorderRadius.circular(8),
+                                          ),
+                                          child: Row(
+                                            children: [
+                                              Icon(
+                                                l.isImportantDoc ? Icons.open_in_new_rounded : Icons.insert_drive_file_outlined,
+                                                size: 15,
+                                                color: l.isImportantDoc ? const Color(0xFF38BDF8) : accent,
+                                              ),
+                                              const SizedBox(width: 6),
+                                              Expanded(
+                                                child: Text(
+                                                  l.fileName,
+                                                  style: TextStyle(
+                                                    fontSize: 12,
+                                                    fontWeight: FontWeight.w600,
+                                                    color: l.isImportantDoc ? const Color(0xFF38BDF8) : null,
+                                                  ),
+                                                ),
+                                              ),
+                                              Text(l.role, style: TextStyle(fontSize: 11, color: _subtleText)),
+                                            ],
+                                          ),
                                         ),
                                       )),
                                   if (_analysis!.drillToolsBreakdown.isNotEmpty) ...[
